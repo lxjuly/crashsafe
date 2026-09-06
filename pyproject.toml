@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crashsafe"
+version = "0.1.0"
+description = "A small durable workflow engine with crash-safe retries"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "pydantic>=2.9,<3",
+  "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+crashsafe-api = "crashsafe.api:run"
+crashsafe-worker = "crashsafe.worker:main"
+crashsafe-mock-tool = "crashsafe.mock_tool:run"
+crashsafe-stack = "crashsafe.stack:main"
+
+[tool.setuptools.packages.find]
+include = ["crashsafe*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["UP045"]  # Optional[...] keeps Pydantic compatible with Python 3.9.
+
+[tool.ruff.lint.per-file-ignores]
+"crashsafe/api.py" = ["B008"]  # FastAPI's documented dependency-injection pattern.
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+packages = ["crashsafe"]
