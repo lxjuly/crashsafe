@@ -142,6 +142,10 @@ configuration change cannot alter the committed wait.
 
 Requires Python 3.9+.
 
+[Watch the 24-second recorded crash-recovery demo](docs/crashsafe-demo.mov). It
+shows the live `kill -9`, replacement worker, repeated charge request with one
+stable key, exactly one durable charge, and the central architecture decision.
+
 ```bash
 make setup
 make test
@@ -169,10 +173,33 @@ checkpoint 2, the repeated request at checkpoint 3, and the three final
 assertions at checkpoint 4. The automated process test remains the executable
 evidence behind the recording.
 
+To reproduce the browser-formatted recording view, run
+`.venv/bin/python scripts/video_demo_console.py` and open
+<http://127.0.0.1:8099/auto>. The page drives real local processes and refuses
+to print `PASS` unless it observes at least two charge attempts sharing one key
+and exactly one ledger charge.
+
 For ordinary exploration, run `make run`, open
 <http://127.0.0.1:8000/docs>, and use the endpoints above. State is stored under
 `.crashsafe/`. If an older development database predates event history, back it
 up if needed and run `make clean` once.
+
+### Optional Temporal comparison
+
+With `uv` and the Temporal CLI installed, run the same ambiguous tool outcome
+through a persistent local Temporal server and one Temporal worker:
+
+```bash
+make demo-temporal
+```
+
+This experiment uses the same mock tool and stable operation key. It kills the
+Temporal worker after the charge commits, displays Temporal's history before and
+after recovery, and verifies that the retried Activity receives the cached
+charge result. The comparison is isolated under `experiments/`; Temporal is not
+a Crashsafe runtime dependency. See the
+[observed comparison](experiments/temporal_compare/README.md) for the exact
+failure sequence and semantic differences.
 
 ## Scope and limitations
 

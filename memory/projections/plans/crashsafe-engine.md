@@ -1,8 +1,8 @@
 # Crashsafe Engine — Full Implementation Plan
 
-Status: implementation and README completed; video recording pending  
+Status: implementation, README, and video completed
 Baseline implemented: 2026-09-06  
-Plan revised: 2026-09-06  
+Plan revised: 2026-09-07
 Assignment: Stack AI Senior Software Engineer Take-Home — Durable Execution Engine
 
 ## 1. Objective
@@ -525,7 +525,7 @@ Outcome:
 
 ### Phase 9 — README, reproducible demo, and video
 
-Status: README and demo completed; human screen recording pending.
+Status: completed.
 
 Rewrite `README.md` as the final submission write-up. Keep it succinct and use
 this order:
@@ -576,8 +576,8 @@ Outcome:
   model/invariants/state-machine/demo format.
 - Updated `make demo` with four readable checkpoints and assertions for event
   history, same-key recovery, projection consistency, and the durable ledger.
-- The remaining submission action is to record the terminal video by following
-  the README steps.
+- Recorded `docs/crashsafe-demo.mov`: a 23.99-second live `SIGKILL` recovery
+  with assertion-gated history, ledger, and guarantee-boundary evidence.
 
 ## 10. Verification matrix
 
@@ -627,11 +627,10 @@ The core durability implementation is complete: append-only event history,
 atomic projection updates, reducer reconstruction, and failure evidence all
 pass. Concurrency remains intentionally outside the submission.
 
-Phase 9 turned the verified implementation into the succinct README and
-reproducible demo. Recording the documented terminal walkthrough is the only
-remaining submission action. After that, optional usability work could include
-richer event inspection, selective operator tooling, or metrics. Retry-policy
-tuning remains configuration work.
+Phase 9 turned the verified implementation into the succinct README,
+reproducible demo, and linked video artifact. The submission scope is complete.
+Optional usability work could include richer event inspection, selective
+operator tooling, or metrics. Retry-policy tuning remains configuration work.
 
 A production distributed engine would separately require concurrent ownership,
 claims, renewable leases, fencing, shards, task queues, history partitioning,

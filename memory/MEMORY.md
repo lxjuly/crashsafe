@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-06T19:08:02Z
+Updated: 2026-09-07T23:20:00Z
 
 ## Claims
 
@@ -17,6 +17,9 @@ Updated: 2026-09-06T19:08:02Z
 - [settled] retry-policy-boundary: Persisting the selected `next_attempt_at` is durable state; deriving it from `Retry-After`, exponential backoff, jitter, or other configuration is policy.
 - [settled] final-verification: Eighteen tests, Ruff, strict mypy, and the recording-oriented ambiguous-charge demo pass.
 - [settled] readme-completed: The final README follows the agreed problem, requirements, architecture, data/invariants, state-machine, and demo structure.
+- [settled] temporal-comparison-verified: An isolated persistent Temporal server with one worker reproduces the ambiguous charge outcome; Activity attempt 2 reuses the application key, returns the cached tool result, and completes with exactly one charge.
+- [settled] temporal-history-difference: In the observed run, Temporal represented the lost first execution through Activity attempt 2 with the prior Start-To-Close timeout, while Crashsafe retains two explicit `StepAttemptStarted` events.
+- [settled] submission-video-recorded: The repository contains a verified 24-second recording showing a real worker `SIGKILL`, replacement PID, two charge attempts with one key, one durable charge, and the architecture guarantee boundary.
 
 ## Commitments
 
@@ -31,4 +34,5 @@ Updated: 2026-09-06T19:08:02Z
 - [accepted] event-history-authority: Treat immutable workflow events as the logical authority and mutable workflow/step rows as the scheduling projection; verify their equality with a pure reducer.
 - [accepted] event-projection-atomicity: Append transition events and update their projections in one SQLite transaction so a crash cannot expose either half.
 - [accepted] concurrency-remains-cut: Do not introduce shards, branches, claims, leases, worker pools, or fencing as part of the event-history implementation.
-- [active] record-submission-video: Record the four-checkpoint terminal walkthrough documented in the README; this is the only remaining human submission action.
+- [accepted] record-submission-video: Keep `docs/crashsafe-demo.mov` linked from the README and keep the assertion-gated browser recording harness reproducible.
+- [accepted] temporal-remains-experiment: Keep Temporal and its Python 3.12 SDK outside Crashsafe's runtime dependencies under `experiments/temporal_compare/`.
