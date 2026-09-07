@@ -1,4 +1,4 @@
-.PHONY: setup run test lint demo clean
+.PHONY: setup run test lint demo demo-temporal clean
 
 setup:
 	python3 -m venv .venv
@@ -17,6 +17,10 @@ lint:
 
 demo:
 	.venv/bin/python scripts/demo_ambiguous_charge.py
+
+demo-temporal:
+	uv run --no-project --python 3.12 --with temporalio==1.18.2 --with-editable . \
+		python -m experiments.temporal_compare.demo
 
 clean:
 	rm -rf .crashsafe .pytest_cache .mypy_cache .ruff_cache
