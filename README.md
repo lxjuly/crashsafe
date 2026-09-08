@@ -160,16 +160,38 @@ and crash commands are in [TESTING.md](TESTING.md).
 
 ## AI usage
 
-AI helped enumerate crash windows, scaffold typed boundaries, draft the reducer
-and process harnesses, and generate adversarial tests. Its suggestions were not
-treated as proof; claims were checked with strict typing, repeated tests,
-database inspection, deterministic barriers/clocks, and real process signals.
+AI performed the implementation: it wrote the application and tests, enumerated
+crash windows, scaffolded the typed boundaries, built the event reducer and
+process harnesses, and drafted the documentation. The most important human work
+was steering. Left unguided, AI repeatedly made plausible local choices that
+pulled the project away from the right submission:
 
-It was wrong in several useful ways. It initially interpreted project memory as
-a runtime CRUD service; rereading the scope removed that work. It emitted Python
-3.10 union syntax despite Python 3.9 support; the end-to-end run caught it. It
-first set `synchronous=FULL` only during setup, but review caught that the pragma
-is connection-local. It initially deleted released lease rows, which could reuse
-fence tokens; a stale-owner test led to retained, monotonic fences. Finally, it
-overbuilt separate demos and a Temporal experiment; review consolidated the
-submission to this engine, one script, and one recording.
+- **Scope:** it initially treated project memory as a runtime CRUD feature and
+  later expanded into experiments that did not strengthen the take-home.
+- **Event history:** it needed direction on why the append-only history is
+  the durable source of truth, which facts belong in it, and where a projection
+  is sufficient instead of more infrastructure.
+- **Workflow definition:** it moved between a hard-coded sequence, a Python-like
+  dynamic model, and a general DAG before human review selected a small,
+  validated JSON definition that demonstrates two useful workflows without
+  making parsing the project.
+- **Demo:** it overbuilt multiple demos and a Temporal experiment before review
+  focused the submission on one terminal recording that visibly proves
+  ambiguous-outcome recovery and a deduplicated side effect.
+- **Build tooling:** it retained a conventional `pip`/Make-based workflow and
+  `Makefile` until human review chose `uv` for a faster, smaller setup.
+
+AI also introduced implementation defects: Python 3.10 union syntax despite
+Python 3.9 support, a connection-local SQLite durability pragma applied only at
+setup, and lease deletion that could reuse fencing tokens. These were caught by
+rereading the assignment, reviewing the data model and transaction boundaries,
+running strict typing and repeated tests, inspecting SQLite state, using
+deterministic barriers and clocks, exercising stale-owner cases, and sending real
+process signals.
+
+AI was extremely helpful: its raw implementation speed made the breadth of this
+project possible within the available time. Human supervision is what made that
+speed effective. It was needed to define the actual problem, reject attractive
+extra scope, choose the durability model and interface, and decide what evidence
+would make the guarantee credible. The result came from combining rapid AI
+execution with deliberate human product and architectural judgment.
