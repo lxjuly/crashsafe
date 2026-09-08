@@ -20,6 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".crashsafe" / "demo"
 API_URL = "http://127.0.0.1:8010"
 TOOL_URL = "http://127.0.0.1:8011"
+DEMO_PAUSE = float(os.environ.get("CRASHSAFE_DEMO_PAUSE", "0"))
+
+
+def pace() -> None:
+    if DEMO_PAUSE > 0:
+        time.sleep(DEMO_PAUSE)
 
 
 def wait_for(predicate: Callable[[], bool], label: str, timeout: float = 10.0) -> None:
@@ -104,6 +110,7 @@ def main() -> None:
         operation_key = str(created["steps"][0]["operation_key"])
         print(f"workflow: {workflow_id}")
         print(f"stable charge key: {operation_key}\n")
+        pace()
 
         print("CHECKPOINT 2 — commit charge, then kill before engine completion", flush=True)
         crash_environment = environment.copy()
@@ -118,10 +125,12 @@ def main() -> None:
         wait_for(signal_file.exists, "durable charge commit")
         before = httpx.get(f"{TOOL_URL}/ledger").json()
         print(f"tool ledger before kill: {before}")
-        print(f"SIGKILL worker PID {worker.pid} before it receives the response")
+        print(f"$ kill -9 {worker.pid}  # worker has not received the response")
+        pace()
         os.kill(worker.pid, signal.SIGKILL)
         if worker.wait(timeout=5) != -signal.SIGKILL:
             raise RuntimeError("worker did not exit from SIGKILL")
+        print(f"worker {worker.pid} exited from SIGKILL")
 
         interrupted = httpx.get(f"{API_URL}/workflows/{workflow_id}").json()
         interrupted_events: list[dict[str, Any]] = httpx.get(
@@ -133,8 +142,10 @@ def main() -> None:
         if any(event["event_type"] == "StepCompleted" for event in interrupted_events):
             raise RuntimeError("charge completion unexpectedly committed before the kill")
         print()
+        pace()
 
         print("CHECKPOINT 3 — recover unknown outcome with the same key", flush=True)
+        pace()
         recovered = subprocess.run(
             [
                 sys.executable,

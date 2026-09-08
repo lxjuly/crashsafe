@@ -142,9 +142,9 @@ configuration change cannot alter the committed wait.
 
 Requires Python 3.9+.
 
-[Watch the 24-second recorded crash-recovery demo](docs/crashsafe-demo.mov). It
-shows the live `kill -9`, replacement worker, repeated charge request with one
-stable key, exactly one durable charge, and the central architecture decision.
+[Watch the 13-second plain-Terminal crash-recovery demo](crashsafe-demo.mov). It
+shows the live `kill -9`, repeated charge request with one stable key, exactly
+one durable charge, and a completed workflow with a consistent history audit.
 
 ```bash
 make setup
@@ -172,12 +172,6 @@ above. Briefly narrate the stable key at checkpoint 1, the ambiguous state at
 checkpoint 2, the repeated request at checkpoint 3, and the three final
 assertions at checkpoint 4. The automated process test remains the executable
 evidence behind the recording.
-
-To reproduce the browser-formatted recording view, run
-`.venv/bin/python scripts/video_demo_console.py` and open
-<http://127.0.0.1:8099/auto>. The page drives real local processes and refuses
-to print `PASS` unless it observes at least two charge attempts sharing one key
-and exactly one ledger charge.
 
 For ordinary exploration, run `make run`, open
 <http://127.0.0.1:8000/docs>, and use the endpoints above. State is stored under
