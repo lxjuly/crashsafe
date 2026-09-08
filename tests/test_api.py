@@ -28,5 +28,11 @@ def test_history_and_audit_endpoints(settings: object) -> None:
     assert audit.status_code == 200
     assert audit.json()["consistent"] is True
 
+    timeline = client.get(f"/workflows/{workflow_id}/timeline")
+    assert timeline.status_code == 200
+    assert timeline.json()["summary"]["audit_consistent"] is True
+    assert timeline.json()["entries"][0]["event_type"] == "WorkflowCreated"
+
     assert client.get("/workflows/missing/events").status_code == 404
     assert client.get("/workflows/missing/audit").status_code == 404
+    assert client.get("/workflows/missing/timeline").status_code == 404

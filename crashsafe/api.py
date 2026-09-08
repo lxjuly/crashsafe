@@ -7,12 +7,20 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 
 from crashsafe.config import DEFAULT_API_HOST, DEFAULT_API_PORT, Settings
-from crashsafe.models import WorkflowAudit, WorkflowCreate, WorkflowEventRecord, WorkflowRecord
+from crashsafe.models import (
+    WorkflowAudit,
+    WorkflowCreate,
+    WorkflowEventRecord,
+    WorkflowRecord,
+    WorkflowTimeline,
+)
+from crashsafe.observability import build_timeline
 from crashsafe.storage import SQLiteStorage, WorkflowNotFoundError
 
 
 def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
-    database = storage or SQLiteStorage(Settings.from_env().engine_db)
+    settings = Settings.from_env()
+    database = storage or SQLiteStorage(settings.engine_db, settings.tool_key)
     app = FastAPI(title="Crashsafe workflow API", version="0.1.0")
 
     def get_storage() -> SQLiteStorage:
@@ -63,6 +71,20 @@ def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
     ) -> WorkflowAudit:
         try:
             return store.audit_workflow(workflow_id)
+        except WorkflowNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
+            ) from exc
+
+    @app.get("/workflows/{workflow_id}/timeline", response_model=WorkflowTimeline)
+    def workflow_timeline(
+        workflow_id: str,
+        store: SQLiteStorage = Depends(get_storage),
+    ) -> WorkflowTimeline:
+        try:
+            return build_timeline(
+                store.list_events(workflow_id), store.audit_workflow(workflow_id)
+            )
         except WorkflowNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"

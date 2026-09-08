@@ -16,6 +16,9 @@ from typing import Any, Callable
 
 import httpx
 
+from crashsafe.models import WorkflowTimeline
+from crashsafe.observability import format_timeline
+
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".crashsafe" / "demo"
 API_URL = "http://127.0.0.1:8010"
@@ -114,6 +117,7 @@ def main() -> None:
 
         print("CHECKPOINT 2 — commit charge, then kill before engine completion", flush=True)
         crash_environment = environment.copy()
+        crash_environment["CRASHSAFE_WORKER_ID"] = "worker-1"
         crash_environment["CRASHSAFE_DELAY_AFTER_TOOL_COMMIT"] = "charge"
         worker = subprocess.Popen(
             [sys.executable, "-m", "crashsafe.worker", "--until-terminal", workflow_id],
@@ -146,6 +150,8 @@ def main() -> None:
 
         print("CHECKPOINT 3 — recover unknown outcome with the same key", flush=True)
         pace()
+        recovery_environment = environment.copy()
+        recovery_environment["CRASHSAFE_WORKER_ID"] = "worker-2"
         recovered = subprocess.run(
             [
                 sys.executable,
@@ -156,7 +162,7 @@ def main() -> None:
                 "--timeout",
                 "10",
             ],
-            env=environment,
+            env=recovery_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             timeout=15,
@@ -170,6 +176,9 @@ def main() -> None:
             f"{API_URL}/workflows/{workflow_id}/events"
         ).json()
         audit = httpx.get(f"{API_URL}/workflows/{workflow_id}/audit").json()
+        timeline = WorkflowTimeline.model_validate(
+            httpx.get(f"{API_URL}/workflows/{workflow_id}/timeline").json()
+        )
         ledger = httpx.get(f"{TOOL_URL}/ledger").json()
         charge_attempts = [
             event
@@ -185,6 +194,8 @@ def main() -> None:
         print(f"workflow status: {finished['status']}")
         print(f"event/projection audit consistent: {audit['consistent']}")
         print(f"final durable ledger: {ledger}")
+        print()
+        print(format_timeline(timeline))
         if (
             finished["status"] != "completed"
             or ledger != {"charges": 1, "provisions": 1, "notifications": 1}
