@@ -53,6 +53,7 @@ class StepDefinition(EventPayload):
     name: StepName
     request: dict[str, Any]
     operation_key: str
+    tool_key: str = "mock-tool"
 
 
 class WorkflowCreatedPayload(EventPayload):
@@ -64,6 +65,8 @@ class StepAttemptStartedPayload(EventPayload):
     name: StepName
     request: dict[str, Any]
     operation_key: str
+    worker_id: Optional[str] = None
+    fence_token: Optional[int] = None
 
 
 class StepRetryScheduledPayload(EventPayload):
@@ -98,6 +101,7 @@ class StepRecord(BaseModel):
     status: StepStatus
     request: dict[str, Any]
     operation_key: str
+    tool_key: str = "mock-tool"
     output: Optional[dict[str, Any]] = None
     attempts: int
     next_attempt_at: Optional[datetime] = None
@@ -133,6 +137,55 @@ class WorkflowAudit(BaseModel):
     consistent: bool
     projected: WorkflowRecord
     rebuilt: WorkflowRecord
+
+
+class WorkflowLease(BaseModel):
+    workflow_id: str
+    owner_id: str
+    fence_token: int
+    lease_expires_at: datetime
+    updated_at: datetime
+
+
+class ClaimedStep(BaseModel):
+    step: StepRecord
+    lease: WorkflowLease
+
+
+class ToolThrottle(BaseModel):
+    tool_key: str
+    blocked_until: datetime
+    reason: str
+    updated_at: datetime
+
+
+class TimelineEntry(BaseModel):
+    sequence: int
+    elapsed_ms: int
+    occurred_at: datetime
+    event_type: EventType
+    step: Optional[StepName] = None
+    attempt: Optional[int] = None
+    worker_id: Optional[str] = None
+    fence_token: Optional[int] = None
+    wait_ms: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class TimelineSummary(BaseModel):
+    status: WorkflowStatus
+    duration_ms: int
+    attempts: int
+    retries: int
+    planned_wait_ms: int
+    audit_consistent: bool
+    step_duration_ms: dict[str, int]
+
+
+class WorkflowTimeline(BaseModel):
+    workflow_id: str
+    entries: list[TimelineEntry]
+    summary: TimelineSummary
 
 
 class ToolResult(BaseModel):

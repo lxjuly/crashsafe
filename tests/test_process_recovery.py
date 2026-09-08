@@ -127,6 +127,10 @@ def test_sigkill_in_ambiguous_charge_window_recovers_exactly_one_effect(
         and event.step_id == finished.steps[0].id
     ]
     assert [event.attempt for event in charge_attempts] == [1, 2]
+    assert [event.schema_version for event in charge_attempts] == [2, 2]
+    assert charge_attempts[0].payload["fence_token"] == 1
+    assert charge_attempts[1].payload["fence_token"] == 2
+    assert charge_attempts[0].payload["worker_id"] != charge_attempts[1].payload["worker_id"]
     assert {
         str(event.payload["operation_key"])
         for event in charge_attempts

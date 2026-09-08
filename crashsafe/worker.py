@@ -55,7 +55,12 @@ def build_worker() -> Worker:
     storage = SQLiteStorage(settings.engine_db)
     gateway = HttpToolGateway(settings.tool_base_url, settings.request_timeout_seconds)
     return Worker(
-        WorkflowEngine(storage=storage, gateway=gateway, settings=settings),
+        WorkflowEngine(
+            storage=storage,
+            gateway=gateway,
+            settings=settings,
+            worker_id=os.getenv("CRASHSAFE_WORKER_ID"),
+        ),
         settings.poll_interval_seconds,
     )
 

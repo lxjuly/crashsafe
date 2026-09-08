@@ -5,6 +5,7 @@ import json
 import os
 import random
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -179,6 +180,8 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
     app = FastAPI(title="Crashsafe flaky mock tool", version="0.1.0")
     flaky_rate = float(os.getenv("CRASHSAFE_FLAKY_RATE", str(DEFAULT_FLAKY_RATE)))
     retry_after = float(os.getenv("CRASHSAFE_RETRY_AFTER", str(DEFAULT_RETRY_AFTER_SECONDS)))
+    forced_failures = int(os.getenv("CRASHSAFE_FAIL_FIRST_N", "0"))
+    failure_lock = threading.Lock()
     rng = random.Random(os.getenv("CRASHSAFE_RANDOM_SEED"))
     request_types: dict[StepName, type[BaseModel]] = {
         StepName.CHARGE: ChargeRequest,
@@ -192,6 +195,7 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
         operation_key: str,
         delay_after_commit: Optional[str],
     ) -> ToolResult:
+        nonlocal forced_failures
         request = request_types[operation].model_validate(payload)
         try:
             committed = tool_store.find(operation, operation_key, request)
@@ -204,7 +208,11 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
             return committed
 
         # Flakiness occurs before the side effect transaction.
-        if rng.random() < flaky_rate:
+        with failure_lock:
+            force_failure = forced_failures > 0
+            if force_failure:
+                forced_failures -= 1
+        if force_failure or rng.random() < flaky_rate:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="mock tool is temporarily throttled",

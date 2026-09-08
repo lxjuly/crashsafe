@@ -7,12 +7,18 @@ import time
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from crashsafe.history import EVENT_SCHEMA_VERSION, canonical_payload, reduce_workflow_history
+from crashsafe.history import (
+    ATTEMPT_EVENT_SCHEMA_VERSION,
+    EVENT_SCHEMA_VERSION,
+    canonical_payload,
+    reduce_workflow_history,
+)
 from crashsafe.models import (
+    ClaimedStep,
     EventPayload,
     EventType,
     StepAttemptStartedPayload,
@@ -23,12 +29,14 @@ from crashsafe.models import (
     StepRecord,
     StepRetryScheduledPayload,
     StepStatus,
+    ToolThrottle,
     WorkflowAudit,
     WorkflowCompletedPayload,
     WorkflowCreate,
     WorkflowCreatedPayload,
     WorkflowEventRecord,
     WorkflowFailedPayload,
+    WorkflowLease,
     WorkflowRecord,
     WorkflowStatus,
 )
@@ -50,11 +58,16 @@ class LegacyDatabaseError(RuntimeError):
     pass
 
 
+class LeaseLostError(RuntimeError):
+    pass
+
+
 class SQLiteStorage:
     """Synchronous SQLite persistence with explicit, short transactions."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, default_tool_key: str = "mock-tool") -> None:
         self.path = path
+        self.default_tool_key = default_tool_key
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -103,6 +116,7 @@ class SQLiteStorage:
                     status TEXT NOT NULL,
                     request_json TEXT NOT NULL,
                     operation_key TEXT NOT NULL UNIQUE,
+                    tool_key TEXT NOT NULL DEFAULT 'mock-tool',
                     output_json TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
                     next_attempt_at TEXT,
@@ -132,6 +146,24 @@ class SQLiteStorage:
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_order
                 ON workflow_events(workflow_id, sequence);
 
+                CREATE TABLE IF NOT EXISTS workflow_leases (
+                    workflow_id TEXT PRIMARY KEY REFERENCES workflows(id),
+                    owner_id TEXT NOT NULL,
+                    fence_token INTEGER NOT NULL,
+                    lease_expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workflow_leases_expiry
+                ON workflow_leases(lease_expires_at);
+
+                CREATE TABLE IF NOT EXISTS tool_throttles (
+                    tool_key TEXT PRIMARY KEY,
+                    blocked_until TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TRIGGER IF NOT EXISTS workflow_events_no_update
                 BEFORE UPDATE ON workflow_events
                 BEGIN
@@ -145,6 +177,14 @@ class SQLiteStorage:
                 END;
                 """
             )
+            step_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(steps)").fetchall()
+            }
+            if "tool_key" not in step_columns:
+                connection.execute(
+                    "ALTER TABLE steps ADD COLUMN tool_key TEXT NOT NULL DEFAULT 'mock-tool'"
+                )
             connection.commit()
             legacy_count = connection.execute(
                 """
@@ -165,7 +205,9 @@ class SQLiteStorage:
         finally:
             connection.close()
 
-    def create_workflow(self, workflow_input: WorkflowCreate) -> WorkflowRecord:
+    def create_workflow(
+        self, workflow_input: WorkflowCreate, tool_key: Optional[str] = None
+    ) -> WorkflowRecord:
         workflow_id = str(uuid.uuid4())
         now = utc_now()
         step_specs: Sequence[tuple[StepName, dict[str, Any]]] = (
@@ -196,6 +238,7 @@ class SQLiteStorage:
                 name=name,
                 request=request,
                 operation_key=f"{workflow_id}:{position}:{name.value}",
+                tool_key=tool_key or self.default_tool_key,
             )
             for position, (name, request) in enumerate(step_specs)
         ]
@@ -215,8 +258,8 @@ class SQLiteStorage:
                     """
                     INSERT INTO steps (
                         id, workflow_id, position, name, status, request_json,
-                        operation_key, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        operation_key, tool_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         definition.id,
@@ -226,6 +269,7 @@ class SQLiteStorage:
                         StepStatus.PENDING.value,
                         self._json_dump(definition.request),
                         definition.operation_key,
+                        definition.tool_key,
                         to_db(now),
                         to_db(now),
                     ),
@@ -293,6 +337,7 @@ class SQLiteStorage:
     def rebuild_projection(self, workflow_id: str) -> WorkflowRecord:
         rebuilt = reduce_workflow_history(self.list_events(workflow_id))
         with self._transaction() as connection:
+            connection.execute("DELETE FROM workflow_leases WHERE workflow_id = ?", (workflow_id,))
             connection.execute("DELETE FROM steps WHERE workflow_id = ?", (workflow_id,))
             connection.execute("DELETE FROM workflows WHERE id = ?", (workflow_id,))
             connection.execute(
@@ -315,9 +360,9 @@ class SQLiteStorage:
                     """
                     INSERT INTO steps (
                         id, workflow_id, position, name, status, request_json,
-                        operation_key, output_json, attempts, next_attempt_at,
+                        operation_key, tool_key, output_json, attempts, next_attempt_at,
                         last_error, created_at, updated_at, completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         step.id,
@@ -327,6 +372,7 @@ class SQLiteStorage:
                         step.status.value,
                         self._json_dump(step.request),
                         step.operation_key,
+                        step.tool_key,
                         None if step.output is None else self._json_dump(step.output),
                         step.attempts,
                         (
@@ -376,7 +422,146 @@ class SQLiteStorage:
         finally:
             connection.close()
 
-    def record_attempt(self, step_id: str) -> StepRecord:
+    def claim_runnable_step(
+        self,
+        owner_id: str,
+        lease_ttl_seconds: float,
+        now: Optional[datetime] = None,
+    ) -> Optional[ClaimedStep]:
+        """Atomically select a runnable workflow and acquire its fenced lease."""
+        current_time = now or utc_now()
+        current = to_db(current_time)
+        expires = to_db(current_time + timedelta(seconds=lease_ttl_seconds))
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*
+                FROM steps s
+                JOIN workflows w ON w.id = s.workflow_id
+                LEFT JOIN workflow_leases l ON l.workflow_id = s.workflow_id
+                LEFT JOIN tool_throttles t ON t.tool_key = s.tool_key
+                WHERE w.status = ?
+                  AND s.status IN (?, ?, ?)
+                  AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= ?)
+                  AND (t.blocked_until IS NULL OR t.blocked_until <= ?)
+                  AND (l.workflow_id IS NULL OR l.lease_expires_at <= ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM steps previous
+                      WHERE previous.workflow_id = s.workflow_id
+                        AND previous.position < s.position
+                        AND previous.status != ?
+                  )
+                ORDER BY w.created_at, s.position
+                LIMIT 1
+                """,
+                (
+                    WorkflowStatus.RUNNING.value,
+                    StepStatus.PENDING.value,
+                    StepStatus.INTENT_RECORDED.value,
+                    StepStatus.RETRY_WAIT.value,
+                    current,
+                    current,
+                    current,
+                    StepStatus.COMPLETED.value,
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            workflow_id = str(row["workflow_id"])
+            existing = connection.execute(
+                "SELECT * FROM workflow_leases WHERE workflow_id = ?", (workflow_id,)
+            ).fetchone()
+            if existing is None:
+                fence_token = 1
+                connection.execute(
+                    """
+                    INSERT INTO workflow_leases (
+                        workflow_id, owner_id, fence_token, lease_expires_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (workflow_id, owner_id, fence_token, expires, current),
+                )
+            else:
+                fence_token = int(existing["fence_token"]) + 1
+                connection.execute(
+                    """
+                    UPDATE workflow_leases
+                    SET owner_id = ?, fence_token = ?, lease_expires_at = ?, updated_at = ?
+                    WHERE workflow_id = ?
+                    """,
+                    (owner_id, fence_token, expires, current, workflow_id),
+                )
+            lease = WorkflowLease.model_validate(
+                {
+                    "workflow_id": workflow_id,
+                    "owner_id": owner_id,
+                    "fence_token": fence_token,
+                    "lease_expires_at": expires,
+                    "updated_at": current,
+                }
+            )
+            return ClaimedStep(step=self._step_from_row(row), lease=lease)
+
+    def renew_lease(
+        self,
+        workflow_id: str,
+        owner_id: str,
+        fence_token: int,
+        lease_ttl_seconds: float,
+    ) -> bool:
+        now = utc_now()
+        expires = now + timedelta(seconds=lease_ttl_seconds)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE workflow_leases
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE workflow_id = ? AND owner_id = ? AND fence_token = ?
+                  AND lease_expires_at > ?
+                """,
+                (to_db(expires), to_db(now), workflow_id, owner_id, fence_token, to_db(now)),
+            )
+            return cursor.rowcount == 1
+
+    def release_lease(self, workflow_id: str, owner_id: str, fence_token: int) -> bool:
+        now = utc_now()
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE workflow_leases
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE workflow_id = ? AND owner_id = ? AND fence_token = ?
+                """,
+                (to_db(now), to_db(now), workflow_id, owner_id, fence_token),
+            )
+            return cursor.rowcount == 1
+
+    def get_lease(self, workflow_id: str) -> Optional[WorkflowLease]:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT * FROM workflow_leases WHERE workflow_id = ?", (workflow_id,)
+            ).fetchone()
+            return None if row is None else WorkflowLease.model_validate(dict(row))
+        finally:
+            connection.close()
+
+    def get_tool_throttle(self, tool_key: str) -> Optional[ToolThrottle]:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT * FROM tool_throttles WHERE tool_key = ?", (tool_key,)
+            ).fetchone()
+            return None if row is None else ToolThrottle.model_validate(dict(row))
+        finally:
+            connection.close()
+
+    def record_attempt(
+        self,
+        step_id: str,
+        owner_id: Optional[str] = None,
+        fence_token: Optional[int] = None,
+    ) -> StepRecord:
         """Durably record intent before any external request leaves the process."""
         now = utc_now()
         with self._transaction() as connection:
@@ -385,6 +570,7 @@ class SQLiteStorage:
             ).fetchone()
             if previous is None:
                 raise KeyError(step_id)
+            self._require_lease(connection, previous, owner_id, fence_token)
             if previous["status"] not in {
                 StepStatus.PENDING.value,
                 StepStatus.INTENT_RECORDED.value,
@@ -400,10 +586,15 @@ class SQLiteStorage:
                     name=previous["name"],
                     request=json.loads(previous["request_json"]),
                     operation_key=previous["operation_key"],
+                    worker_id=owner_id,
+                    fence_token=fence_token,
                 ),
                 now,
                 step_id=step_id,
                 attempt=attempt,
+                schema_version=(
+                    ATTEMPT_EVENT_SCHEMA_VERSION if owner_id is not None else EVENT_SCHEMA_VERSION
+                ),
             )
             cursor = connection.execute(
                 """
@@ -427,12 +618,21 @@ class SQLiteStorage:
             assert row is not None
             return self._step_from_row(row)
 
-    def schedule_retry(self, step_id: str, error: str, next_attempt_at: datetime) -> None:
+    def schedule_retry(
+        self,
+        step_id: str,
+        error: str,
+        next_attempt_at: datetime,
+        owner_id: Optional[str] = None,
+        fence_token: Optional[int] = None,
+        throttle_tool: bool = False,
+    ) -> None:
         now = utc_now()
         with self._transaction() as connection:
             row = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
             if row is None:
                 raise KeyError(step_id)
+            self._require_lease(connection, row, owner_id, fence_token)
             if row["status"] != StepStatus.INTENT_RECORDED.value:
                 raise RuntimeError(f"step {step_id} has no active attempt")
             self._append_event(
@@ -460,8 +660,28 @@ class SQLiteStorage:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"step {step_id} retry transition failed")
+            if throttle_tool:
+                connection.execute(
+                    """
+                    INSERT INTO tool_throttles (tool_key, blocked_until, reason, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(tool_key) DO UPDATE SET
+                        blocked_until = MAX(tool_throttles.blocked_until, excluded.blocked_until),
+                        reason = CASE
+                            WHEN excluded.blocked_until >= tool_throttles.blocked_until
+                            THEN excluded.reason ELSE tool_throttles.reason END,
+                        updated_at = excluded.updated_at
+                    """,
+                    (row["tool_key"], to_db(next_attempt_at), error, to_db(now)),
+                )
 
-    def fail_step(self, step_id: str, error: str) -> None:
+    def fail_step(
+        self,
+        step_id: str,
+        error: str,
+        owner_id: Optional[str] = None,
+        fence_token: Optional[int] = None,
+    ) -> None:
         now = utc_now()
         with self._transaction() as connection:
             row = connection.execute(
@@ -469,6 +689,7 @@ class SQLiteStorage:
             ).fetchone()
             if row is None:
                 raise KeyError(step_id)
+            self._require_lease(connection, row, owner_id, fence_token)
             if row["status"] != StepStatus.INTENT_RECORDED.value:
                 raise RuntimeError(f"step {step_id} has no active attempt")
             workflow_id = str(row["workflow_id"])
@@ -501,7 +722,13 @@ class SQLiteStorage:
                 (WorkflowStatus.FAILED.value, to_db(now), workflow_id),
             )
 
-    def complete_step(self, step_id: str, output: dict[str, Any]) -> None:
+    def complete_step(
+        self,
+        step_id: str,
+        output: dict[str, Any],
+        owner_id: Optional[str] = None,
+        fence_token: Optional[int] = None,
+    ) -> None:
         """Atomically commit the step output and, if final, workflow completion."""
         now = utc_now()
         with self._transaction() as connection:
@@ -510,6 +737,7 @@ class SQLiteStorage:
             ).fetchone()
             if row is None:
                 raise KeyError(step_id)
+            self._require_lease(connection, row, owner_id, fence_token)
             if row["status"] != StepStatus.INTENT_RECORDED.value:
                 return
             workflow_id = str(row["workflow_id"])
@@ -576,6 +804,7 @@ class SQLiteStorage:
         *,
         step_id: Optional[str] = None,
         attempt: Optional[int] = None,
+        schema_version: int = EVENT_SCHEMA_VERSION,
     ) -> None:
         payload_data = canonical_payload(event_type, payload)
         sequence = int(
@@ -598,7 +827,7 @@ class SQLiteStorage:
                 workflow_id,
                 sequence,
                 event_type.value,
-                EVENT_SCHEMA_VERSION,
+                schema_version,
                 step_id,
                 attempt,
                 self._json_dump(payload_data),
@@ -617,6 +846,31 @@ class SQLiteStorage:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(event_type.value, encoding="utf-8")
         time.sleep(float(os.getenv("CRASHSAFE_EVENT_PAUSE_SECONDS", "30")))
+
+    @staticmethod
+    def _require_lease(
+        connection: sqlite3.Connection,
+        step: sqlite3.Row,
+        owner_id: Optional[str],
+        fence_token: Optional[int],
+    ) -> None:
+        if owner_id is None and fence_token is None:
+            return
+        if owner_id is None or fence_token is None:
+            raise ValueError("owner_id and fence_token must be supplied together")
+        now = to_db(utc_now())
+        lease = connection.execute(
+            """
+            SELECT 1 FROM workflow_leases
+            WHERE workflow_id = ? AND owner_id = ? AND fence_token = ?
+              AND lease_expires_at > ?
+            """,
+            (step["workflow_id"], owner_id, fence_token, now),
+        ).fetchone()
+        if lease is None:
+            raise LeaseLostError(
+                f"worker {owner_id} no longer owns workflow {step['workflow_id']}"
+            )
 
     @staticmethod
     def _json_dump(value: Any) -> str:
@@ -646,6 +900,7 @@ class SQLiteStorage:
             status=row["status"],
             request=json.loads(row["request_json"]),
             operation_key=row["operation_key"],
+            tool_key=row["tool_key"],
             output=None if row["output_json"] is None else json.loads(row["output_json"]),
             attempts=row["attempts"],
             next_attempt_at=row["next_attempt_at"],

@@ -22,6 +22,8 @@ from crashsafe.models import (
 )
 
 EVENT_SCHEMA_VERSION = 1
+ATTEMPT_EVENT_SCHEMA_VERSION = 2
+SUPPORTED_EVENT_SCHEMA_VERSIONS = {EVENT_SCHEMA_VERSION, ATTEMPT_EVENT_SCHEMA_VERSION}
 PayloadT = TypeVar("PayloadT", bound=EventPayload)
 
 PAYLOAD_MODELS: dict[EventType, type[EventPayload]] = {
@@ -65,7 +67,7 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
             raise HistoryIntegrityError(
                 f"expected event sequence {expected_sequence}, got {event.sequence}"
             )
-        if event.schema_version != EVENT_SCHEMA_VERSION:
+        if event.schema_version not in SUPPORTED_EVENT_SCHEMA_VERSIONS:
             raise HistoryIntegrityError(
                 f"unsupported event schema version {event.schema_version}"
             )
@@ -98,6 +100,7 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
                         status=StepStatus.PENDING,
                         request=definition.request,
                         operation_key=definition.operation_key,
+                        tool_key=definition.tool_key,
                         attempts=0,
                         created_at=event.occurred_at,
                         updated_at=event.occurred_at,
@@ -147,6 +150,10 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
 
         if event.event_type == EventType.STEP_ATTEMPT_STARTED:
             started = _require_payload(payload, StepAttemptStartedPayload)
+            if event.schema_version == ATTEMPT_EVENT_SCHEMA_VERSION and (
+                started.worker_id is None or started.fence_token is None
+            ):
+                raise HistoryIntegrityError("version 2 attempt events require lease ownership")
             if step.status not in {
                 StepStatus.PENDING,
                 StepStatus.INTENT_RECORDED,
