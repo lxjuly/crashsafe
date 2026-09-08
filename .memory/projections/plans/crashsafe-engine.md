@@ -443,7 +443,7 @@ Planned:
 Outcome:
 
 - Implemented and verified with a real signal during a delayed committed charge
-  response. See `memory/projections/plans/graceful-drain.md`.
+  response. See `.memory/projections/plans/graceful-drain.md`.
 
 ### Phase 8 — append-only event history
 
