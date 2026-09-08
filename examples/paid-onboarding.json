@@ -1,0 +1,27 @@
+{
+  "name": "paid-onboarding",
+  "steps": [
+    {
+      "id": "charge",
+      "operation": "charge",
+      "depends_on": [],
+      "request": {"customer_id": "paid-customer", "amount_cents": 4200}
+    },
+    {
+      "id": "provision",
+      "operation": "provision",
+      "depends_on": ["charge"],
+      "request": {"customer_id": "paid-customer", "plan": "standard"}
+    },
+    {
+      "id": "notify",
+      "operation": "notify",
+      "depends_on": ["provision"],
+      "request": {
+        "customer_id": "paid-customer",
+        "email": "paid@example.com",
+        "message": "Your paid account is ready."
+      }
+    }
+  ]
+}

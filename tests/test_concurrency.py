@@ -6,20 +6,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from workflow_fixtures import paid_workflow
 
 from crashsafe.engine import WorkflowEngine
-from crashsafe.models import StepRecord, ToolResult, WorkflowCreate
+from crashsafe.models import StepRecord, ToolResult
 from crashsafe.storage import LeaseLostError, SQLiteStorage
 
 
 def _create(store: SQLiteStorage, customer: str = "customer"):
-    return store.create_workflow(
-        WorkflowCreate(
-            customer_id=customer,
-            amount_cents=2500,
-            email=f"{customer}@example.com",
-        )
-    )
+    return store.create_workflow(paid_workflow(customer))
 
 
 def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
@@ -28,7 +23,10 @@ def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
     first = store.claim_runnable_step("worker-1", 0.05)
     assert first is not None
     attempted = store.record_attempt(
-        first.step.id, first.lease.owner_id, first.lease.fence_token
+        first.step.workflow_id,
+        first.step.id,
+        first.lease.owner_id,
+        first.lease.fence_token,
     )
 
     time.sleep(0.07)
@@ -38,6 +36,7 @@ def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
 
     with pytest.raises(LeaseLostError):
         store.complete_step(
+            attempted.workflow_id,
             attempted.id,
             {"reference_id": "stale"},
             first.lease.owner_id,
@@ -45,9 +44,13 @@ def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
         )
 
     retried = store.record_attempt(
-        second.step.id, second.lease.owner_id, second.lease.fence_token
+        second.step.workflow_id,
+        second.step.id,
+        second.lease.owner_id,
+        second.lease.fence_token,
     )
     store.complete_step(
+        retried.workflow_id,
         retried.id,
         {"reference_id": "current"},
         second.lease.owner_id,
@@ -68,7 +71,7 @@ class BlockingGateway:
         self.calls.append(step.operation_key)
         self.entered.set()
         assert self.release.wait(2)
-        return ToolResult(operation=step.name, reference_id="one")
+        return ToolResult(operation=step.operation, reference_id="one")
 
 
 def test_two_workers_do_not_execute_the_same_claim(settings: object) -> None:
@@ -125,7 +128,7 @@ def test_two_workers_can_process_different_workflows(settings: object) -> None:
             with lock:
                 calls.append(step.workflow_id)
             barrier.wait(timeout=2)
-            return ToolResult(operation=step.name, reference_id=step.workflow_id)
+            return ToolResult(operation=step.operation, reference_id=step.workflow_id)
 
     gateway = ConcurrentGateway()
     engines = [

@@ -1,0 +1,31 @@
+{
+  "name": "trial-activation",
+  "steps": [
+    {
+      "id": "provision-trial",
+      "operation": "provision",
+      "depends_on": [],
+      "request": {"customer_id": "trial-customer", "plan": "trial"}
+    },
+    {
+      "id": "notify-customer",
+      "operation": "notify",
+      "depends_on": ["provision-trial"],
+      "request": {
+        "customer_id": "trial-customer",
+        "email": "trial@example.com",
+        "message": "Your trial is ready."
+      }
+    },
+    {
+      "id": "notify-internal",
+      "operation": "notify",
+      "depends_on": ["provision-trial"],
+      "request": {
+        "customer_id": "trial-customer",
+        "email": "sales@example.com",
+        "message": "A trial account was activated."
+      }
+    }
+  ]
+}

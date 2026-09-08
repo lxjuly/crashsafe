@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from crashsafe.config import (
     DEBUG_COMMIT_DELAY_SECONDS,
@@ -26,24 +26,15 @@ from crashsafe.config import (
     Settings,
 )
 from crashsafe.engine import DEBUG_DELAY_HEADER, IDEMPOTENCY_HEADER, RETRY_AFTER_HEADER
-from crashsafe.models import LedgerSummary, StepName, ToolResult
+from crashsafe.models import (
+    ChargeRequest,
+    LedgerSummary,
+    NotifyRequest,
+    ProvisionRequest,
+    StepName,
+    ToolResult,
+)
 from crashsafe.storage import to_db, utc_now
-
-
-class ChargeRequest(BaseModel):
-    customer_id: str = Field(min_length=1)
-    amount_cents: int = Field(gt=0)
-
-
-class ProvisionRequest(BaseModel):
-    customer_id: str = Field(min_length=1)
-    plan: str = Field(min_length=1)
-
-
-class NotifyRequest(BaseModel):
-    customer_id: str = Field(min_length=1)
-    email: str = Field(min_length=3)
-    message: str = Field(min_length=1)
 
 
 class IdempotencyConflictError(Exception):

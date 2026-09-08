@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class WorkflowStatus(str, Enum):
@@ -37,32 +41,107 @@ class EventType(str, Enum):
     WORKFLOW_FAILED = "WorkflowFailed"
 
 
-class WorkflowCreate(BaseModel):
+class ChargeRequest(StrictModel):
     customer_id: str = Field(min_length=1, max_length=128)
     amount_cents: int = Field(gt=0)
+
+
+class ProvisionRequest(StrictModel):
+    customer_id: str = Field(min_length=1, max_length=128)
+    plan: str = Field(min_length=1, max_length=128)
+
+
+class NotifyRequest(StrictModel):
+    customer_id: str = Field(min_length=1, max_length=128)
     email: str = Field(min_length=3, max_length=320)
+    message: str = Field(min_length=1, max_length=1000)
 
 
-class EventPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class WorkflowStepBase(StrictModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    depends_on: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ChargeStep(WorkflowStepBase):
+    operation: Literal[StepName.CHARGE]
+    request: ChargeRequest
+
+
+class ProvisionStep(WorkflowStepBase):
+    operation: Literal[StepName.PROVISION]
+    request: ProvisionRequest
+
+
+class NotifyStep(WorkflowStepBase):
+    operation: Literal[StepName.NOTIFY]
+    request: NotifyRequest
+
+
+WorkflowStep = Annotated[
+    Union[ChargeStep, ProvisionStep, NotifyStep], Field(discriminator="operation")
+]
+
+
+class WorkflowCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=128)
+    steps: list[WorkflowStep] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> WorkflowCreate:
+        ids = [step.id for step in self.steps]
+        if len(set(ids)) != len(ids):
+            raise ValueError("step IDs must be unique")
+        known = set(ids)
+        for step in self.steps:
+            if len(set(step.depends_on)) != len(step.depends_on):
+                raise ValueError(f"step {step.id} has duplicate dependencies")
+            if step.id in step.depends_on:
+                raise ValueError(f"step {step.id} cannot depend on itself")
+            missing = set(step.depends_on) - known
+            if missing:
+                raise ValueError(f"step {step.id} has unknown dependencies: {sorted(missing)}")
+
+        dependencies = {step.id: set(step.depends_on) for step in self.steps}
+        ready = [step_id for step_id in ids if not dependencies[step_id]]
+        visited: list[str] = []
+        while ready:
+            current = ready.pop(0)
+            visited.append(current)
+            for candidate in ids:
+                if current in dependencies[candidate]:
+                    dependencies[candidate].remove(current)
+                    if (
+                        not dependencies[candidate]
+                        and candidate not in visited
+                        and candidate not in ready
+                    ):
+                        ready.append(candidate)
+        if len(visited) != len(ids):
+            raise ValueError("workflow dependencies must be acyclic")
+        return self
+
+
+class EventPayload(StrictModel):
+    pass
 
 
 class StepDefinition(EventPayload):
     id: str
     position: int
-    name: StepName
+    operation: StepName
+    depends_on: list[str]
     request: dict[str, Any]
     operation_key: str
     tool_key: str = "mock-tool"
 
 
 class WorkflowCreatedPayload(EventPayload):
-    input: WorkflowCreate
+    name: str
     steps: list[StepDefinition]
 
 
 class StepAttemptStartedPayload(EventPayload):
-    name: StepName
+    operation: StepName
     request: dict[str, Any]
     operation_key: str
     worker_id: Optional[str] = None
@@ -97,7 +176,8 @@ class StepRecord(BaseModel):
     id: str
     workflow_id: str
     position: int
-    name: StepName
+    operation: StepName
+    depends_on: list[str]
     status: StepStatus
     request: dict[str, Any]
     operation_key: str
@@ -113,8 +193,8 @@ class StepRecord(BaseModel):
 
 class WorkflowRecord(BaseModel):
     id: str
+    name: str
     status: WorkflowStatus
-    input: WorkflowCreate
     steps: list[StepRecord]
     created_at: datetime
     updated_at: datetime
@@ -131,12 +211,6 @@ class WorkflowEventRecord(BaseModel):
     attempt: Optional[int] = None
     payload: dict[str, Any]
     occurred_at: datetime
-
-
-class WorkflowAudit(BaseModel):
-    consistent: bool
-    projected: WorkflowRecord
-    rebuilt: WorkflowRecord
 
 
 class WorkflowLease(BaseModel):
@@ -164,7 +238,8 @@ class TimelineEntry(BaseModel):
     elapsed_ms: int
     occurred_at: datetime
     event_type: EventType
-    step: Optional[StepName] = None
+    step_id: Optional[str] = None
+    operation: Optional[StepName] = None
     attempt: Optional[int] = None
     worker_id: Optional[str] = None
     fence_token: Optional[int] = None
@@ -178,7 +253,6 @@ class TimelineSummary(BaseModel):
     attempts: int
     retries: int
     planned_wait_ms: int
-    audit_consistent: bool
     step_duration_ms: dict[str, int]
 
 

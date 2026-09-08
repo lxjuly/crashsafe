@@ -39,17 +39,13 @@ class StackSupervisor:
     def _spawn(
         self, module: str, environment: Optional[dict[str, str]] = None
     ) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            [sys.executable, "-m", module], env=environment or self.environment
-        )
+        return subprocess.Popen([sys.executable, "-m", module], env=environment or self.environment)
 
     def _start_worker(self, index: int) -> None:
         name = f"worker-{index}"
         environment = self.environment.copy()
         environment["CRASHSAFE_WORKER_ID"] = name
-        pid_path = self.settings.state_dir / (
-            "worker.pid" if index == 1 else f"{name}.pid"
-        )
+        pid_path = self.settings.state_dir / ("worker.pid" if index == 1 else f"{name}.pid")
         environment["CRASHSAFE_WORKER_PID_FILE"] = str(pid_path)
         self.processes[name] = self._spawn("crashsafe.worker", environment)
 

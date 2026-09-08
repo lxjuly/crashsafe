@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from workflow_fixtures import paid_workflow
+
 from crashsafe.engine import RetryableToolError, WorkflowEngine
 from crashsafe.models import (
     EventType,
     StepRecord,
     StepRetryScheduledPayload,
     ToolResult,
-    WorkflowCreate,
     WorkflowStatus,
 )
 from crashsafe.storage import SQLiteStorage, utc_now
@@ -22,7 +23,7 @@ class FlakyGateway:
         self.keys.append(step.operation_key)
         if len(self.keys) == 1:
             raise RetryableToolError("throttled", retry_after_seconds=0.0)
-        return ToolResult(operation=step.name, reference_id=f"ref-{step.name.value}")
+        return ToolResult(operation=step.operation, reference_id=f"ref-{step.operation.value}")
 
 
 class AlwaysThrottledGateway:
@@ -33,9 +34,7 @@ class AlwaysThrottledGateway:
 
 def test_retry_schedule_and_idempotency_key_survive_retry(settings: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id="customer-1", amount_cents=2500, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow())
     gateway = FlakyGateway()
     engine = WorkflowEngine(store, gateway, settings)  # type: ignore[arg-type]
 
@@ -58,9 +57,7 @@ def test_retry_schedule_and_idempotency_key_survive_retry(settings: object) -> N
 
 def test_committed_retry_time_does_not_change_with_configuration(settings: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id="customer-1", amount_cents=2500, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow())
     engine = WorkflowEngine(store, AlwaysThrottledGateway(), settings)  # type: ignore[arg-type]
     engine.run_once()
     selected_time = store.get_workflow(workflow.id).steps[0].next_attempt_at

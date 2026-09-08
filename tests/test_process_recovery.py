@@ -11,8 +11,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from workflow_fixtures import paid_workflow
 
-from crashsafe.models import EventType, StepStatus, WorkflowCreate, WorkflowStatus
+from crashsafe.models import EventType, StepStatus, WorkflowStatus
 from crashsafe.storage import SQLiteStorage
 
 
@@ -73,9 +74,7 @@ def test_sigkill_in_ambiguous_charge_window_recovers_exactly_one_effect(
 ) -> None:
     env = live_tool
     store = SQLiteStorage(tmp_path / "engine.db")
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id="customer-1", amount_cents=2500, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow())
     first_env = env.copy()
     first_env["CRASHSAFE_DELAY_AFTER_TOOL_COMMIT"] = "charge"
     first_env["CRASHSAFE_REQUEST_TIMEOUT"] = "60"
@@ -131,11 +130,10 @@ def test_sigkill_in_ambiguous_charge_window_recovers_exactly_one_effect(
     assert charge_attempts[0].payload["fence_token"] == 1
     assert charge_attempts[1].payload["fence_token"] == 2
     assert charge_attempts[0].payload["worker_id"] != charge_attempts[1].payload["worker_id"]
-    assert {
-        str(event.payload["operation_key"])
-        for event in charge_attempts
-    } == {finished.steps[0].operation_key}
-    assert store.audit_workflow(workflow.id).consistent
+    assert {str(event.payload["operation_key"]) for event in charge_attempts} == {
+        finished.steps[0].operation_key
+    }
+    assert store.projection_matches_history(workflow.id)
     assert httpx.get(f"{env['CRASHSAFE_TOOL_URL']}/ledger").json() == {
         "charges": 1,
         "provisions": 1,
@@ -148,9 +146,7 @@ def test_sigkill_between_event_append_and_projection_update_rolls_back_transacti
 ) -> None:
     env = live_tool
     store = SQLiteStorage(tmp_path / "engine.db")
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id="atomic-test", amount_cents=2500, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow("atomic-test"))
     transition_signal = tmp_path / "step-completed-uncommitted.signal"
     crashing_env = env.copy()
     crashing_env.update(
@@ -176,7 +172,7 @@ def test_sigkill_between_event_append_and_projection_update_rolls_back_transacti
         EventType.WORKFLOW_CREATED,
         EventType.STEP_ATTEMPT_STARTED,
     ]
-    assert store.audit_workflow(workflow.id).consistent
+    assert store.projection_matches_history(workflow.id)
     assert httpx.get(f"{env['CRASHSAFE_TOOL_URL']}/ledger").json()["charges"] == 1
 
     recovered = subprocess.run(
@@ -189,7 +185,7 @@ def test_sigkill_between_event_append_and_projection_update_rolls_back_transacti
     )
     assert recovered.returncode == 0
     assert store.get_workflow(workflow.id).status == WorkflowStatus.COMPLETED
-    assert store.audit_workflow(workflow.id).consistent
+    assert store.projection_matches_history(workflow.id)
     assert httpx.get(f"{env['CRASHSAFE_TOOL_URL']}/ledger").json()["charges"] == 1
 
 
@@ -198,9 +194,7 @@ def test_sigterm_drains_in_flight_step_then_restart_resumes(
 ) -> None:
     env = live_tool
     store = SQLiteStorage(tmp_path / "engine.db")
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id="drain-test", amount_cents=2500, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow("drain-test"))
     draining_env = env.copy()
     draining_env["CRASHSAFE_DELAY_AFTER_TOOL_COMMIT"] = "charge"
     draining_env["CRASHSAFE_REQUEST_TIMEOUT"] = "5"
@@ -257,9 +251,7 @@ def test_deterministic_hard_crash_points_resume(
 ) -> None:
     env = live_tool
     store = SQLiteStorage(tmp_path / "engine.db")
-    workflow = store.create_workflow(
-        WorkflowCreate(customer_id=crash_point, amount_cents=100, email="a@example.com")
-    )
+    workflow = store.create_workflow(paid_workflow(crash_point.replace(":", "-")))
     crashing_env = env.copy()
     crashing_env["CRASHSAFE_CRASH_AT"] = crash_point
     crashed = subprocess.run(

@@ -8,7 +8,6 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 
 from crashsafe.config import DEFAULT_API_HOST, DEFAULT_API_PORT, Settings
 from crashsafe.models import (
-    WorkflowAudit,
     WorkflowCreate,
     WorkflowEventRecord,
     WorkflowRecord,
@@ -64,27 +63,13 @@ def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
             ) from exc
 
-    @app.get("/workflows/{workflow_id}/audit", response_model=WorkflowAudit)
-    def audit_workflow(
-        workflow_id: str,
-        store: SQLiteStorage = Depends(get_storage),
-    ) -> WorkflowAudit:
-        try:
-            return store.audit_workflow(workflow_id)
-        except WorkflowNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
-            ) from exc
-
     @app.get("/workflows/{workflow_id}/timeline", response_model=WorkflowTimeline)
     def workflow_timeline(
         workflow_id: str,
         store: SQLiteStorage = Depends(get_storage),
     ) -> WorkflowTimeline:
         try:
-            return build_timeline(
-                store.list_events(workflow_id), store.audit_workflow(workflow_id)
-            )
+            return build_timeline(store.list_events(workflow_id))
         except WorkflowNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"

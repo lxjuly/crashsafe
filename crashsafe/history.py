@@ -23,7 +23,12 @@ from crashsafe.models import (
 
 EVENT_SCHEMA_VERSION = 1
 ATTEMPT_EVENT_SCHEMA_VERSION = 2
-SUPPORTED_EVENT_SCHEMA_VERSIONS = {EVENT_SCHEMA_VERSION, ATTEMPT_EVENT_SCHEMA_VERSION}
+WORKFLOW_CREATED_SCHEMA_VERSION = 3
+SUPPORTED_EVENT_SCHEMA_VERSIONS = {
+    EVENT_SCHEMA_VERSION,
+    ATTEMPT_EVENT_SCHEMA_VERSION,
+    WORKFLOW_CREATED_SCHEMA_VERSION,
+}
 PayloadT = TypeVar("PayloadT", bound=EventPayload)
 
 PAYLOAD_MODELS: dict[EventType, type[EventPayload]] = {
@@ -68,9 +73,7 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
                 f"expected event sequence {expected_sequence}, got {event.sequence}"
             )
         if event.schema_version not in SUPPORTED_EVENT_SCHEMA_VERSIONS:
-            raise HistoryIntegrityError(
-                f"unsupported event schema version {event.schema_version}"
-            )
+            raise HistoryIntegrityError(f"unsupported event schema version {event.schema_version}")
         expected_sequence += 1
 
         try:
@@ -83,20 +86,23 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
         if event.event_type == EventType.WORKFLOW_CREATED:
             if workflow is not None or event.sequence != 1:
                 raise HistoryIntegrityError("WorkflowCreated must be the first and only creation")
+            if event.schema_version != WORKFLOW_CREATED_SCHEMA_VERSION:
+                raise HistoryIntegrityError("materialized workflows require WorkflowCreated v3")
             if event.step_id is not None or event.attempt is not None:
                 raise HistoryIntegrityError("WorkflowCreated cannot identify a step or attempt")
             created = _require_payload(payload, WorkflowCreatedPayload)
-            _validate_definitions(created.steps)
+            _validate_definitions(workflow_id, created.steps)
             workflow = WorkflowRecord(
                 id=workflow_id,
+                name=created.name,
                 status=WorkflowStatus.RUNNING,
-                input=created.input,
                 steps=[
                     StepRecord(
                         id=definition.id,
                         workflow_id=workflow_id,
                         position=definition.position,
-                        name=definition.name,
+                        operation=definition.operation,
+                        depends_on=definition.depends_on,
                         status=StepStatus.PENDING,
                         request=definition.request,
                         operation_key=definition.operation_key,
@@ -162,14 +168,15 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
                 raise HistoryIntegrityError("attempt started from a non-runnable state")
             if event.attempt != step.attempts + 1:
                 raise HistoryIntegrityError("attempt numbers must increase by exactly one")
-            if any(
-                previous.position < step.position
-                and previous.status != StepStatus.COMPLETED
-                for previous in workflow.steps
-            ):
-                raise HistoryIntegrityError("attempt started before its predecessors completed")
+            completed = {
+                candidate.id
+                for candidate in workflow.steps
+                if candidate.status == StepStatus.COMPLETED
+            }
+            if not set(step.depends_on).issubset(completed):
+                raise HistoryIntegrityError("attempt started before its dependencies completed")
             if (
-                started.name != step.name
+                started.operation != step.operation
                 or started.request != step.request
                 or started.operation_key != step.operation_key
             ):
@@ -195,12 +202,12 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
                 }
             )
         elif event.event_type == EventType.STEP_COMPLETED:
-            completed = _require_payload(payload, StepCompletedPayload)
+            completed_payload = _require_payload(payload, StepCompletedPayload)
             _require_current_attempt(step, event.attempt, StepStatus.INTENT_RECORDED)
             step = step.model_copy(
                 update={
                     "status": StepStatus.COMPLETED,
-                    "output": completed.output,
+                    "output": completed_payload.output,
                     "next_attempt_at": None,
                     "last_error": None,
                     "updated_at": event.occurred_at,
@@ -237,14 +244,32 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
     return workflow
 
 
-def _validate_definitions(definitions: Sequence[StepDefinition]) -> None:
+def _validate_definitions(workflow_id: str, definitions: Sequence[StepDefinition]) -> None:
+    if not definitions:
+        raise HistoryIntegrityError("workflow must contain at least one step")
     positions = [definition.position for definition in definitions]
     if positions != list(range(len(definitions))):
         raise HistoryIntegrityError("step definitions must be ordered and contiguous")
-    if len({definition.id for definition in definitions}) != len(definitions):
+    ids = [definition.id for definition in definitions]
+    if len(set(ids)) != len(ids):
         raise HistoryIntegrityError("step IDs must be unique")
-    if len({definition.operation_key for definition in definitions}) != len(definitions):
-        raise HistoryIntegrityError("operation keys must be unique")
+    known = set(ids)
+    for definition in definitions:
+        if definition.operation_key != f"{workflow_id}:{definition.id}":
+            raise HistoryIntegrityError("operation key does not match workflow and step IDs")
+        if len(set(definition.depends_on)) != len(definition.depends_on):
+            raise HistoryIntegrityError("dependencies must be unique")
+        if definition.id in definition.depends_on or not set(definition.depends_on) <= known:
+            raise HistoryIntegrityError("step definition has an invalid dependency")
+    remaining = {definition.id: set(definition.depends_on) for definition in definitions}
+    visited: set[str] = set()
+    while len(visited) < len(definitions):
+        ready = [
+            step_id for step_id in ids if step_id not in visited and remaining[step_id] <= visited
+        ]
+        if not ready:
+            raise HistoryIntegrityError("step definitions contain a cycle")
+        visited.add(ready[0])
 
 
 def _find_step_with_index(workflow: WorkflowRecord, step_id: str) -> tuple[int, StepRecord]:
@@ -258,9 +283,7 @@ def _find_step(workflow: WorkflowRecord, step_id: str) -> StepRecord:
     return _find_step_with_index(workflow, step_id)[1]
 
 
-def _require_current_attempt(
-    step: StepRecord, attempt: int, expected_status: StepStatus
-) -> None:
+def _require_current_attempt(step: StepRecord, attempt: int, expected_status: StepStatus) -> None:
     if step.status != expected_status or step.attempts != attempt:
         raise HistoryIntegrityError("event does not match the current step attempt")
 
