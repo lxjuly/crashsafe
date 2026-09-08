@@ -21,7 +21,7 @@ Updated: 2026-09-08T06:03:08Z
 - [settled] temporal-history-difference: In the observed run, Temporal represented the lost first execution through Activity attempt 2 with the prior Start-To-Close timeout, while Crashsafe retains two explicit `StepAttemptStarted` events.
 - [settled] submission-video-recorded: The repository root contains `crashsafe-demo.mov`, a 13-second plain-Terminal recording showing a real worker `SIGKILL`, two charge attempts with one key, and one durable charge; macOS Quick Look successfully rendered its terminal content during final artifact verification.
 - [settled] feature-test-manual: `TESTING.md` provides concise, reproducible checks for crash recovery, safe retries, and graceful drain.
-- [settled] handoff-ready-memory: Project memory now lives under `.memory/`; the current projection and dated journal identify the verified state and outstanding Git handoff action.
+- [settled] handoff-ready-memory: Project memory lives under `.memory/`; the current projection and dated journal identify the verified implementation and completed Git handoff.
 - [settled] evaluator-focused-readme: The README now follows the requested review structure: built/cut scope, key decisions and uncertainties, five precise failure modes, and concrete AI usage mistakes and verification.
 - [settled] extension-scope-complete: Concurrent workers, observability, and adaptive backoff are implemented and verified without changing the core durability boundary.
 - [settled] concurrency-model-implemented: `CRASHSAFE_WORKERS` defaults to one and supports two for demos; workflow-level renewable leases plus monotonic fence tokens permit one valid committing owner while preserving safe at-least-once recovery after expiry.
@@ -37,7 +37,7 @@ Updated: 2026-09-08T06:03:08Z
 - [accepted] separate-durability-domains: Keep engine state and mock-tool idempotency state in separate SQLite databases so no shared transaction hides the network ambiguity.
 - [accepted] memory-is-documentation: Keep project memory as Git-tracked files under `.memory/`; do not add a memory API, database, or CRUD subsystem to the take-home.
 - [accepted] graceful-drain-contract: On SIGTERM or SIGINT, admit no new step, allow the current attempt and its state transaction to finish, then exit; forced termination continues to use crash-safe recovery.
-- [accepted] expanded-submission-readiness: Phases 10–13 are implemented; final Git/video handoff follows the repeated verification gate.
+- [accepted] expanded-submission-readiness: Phases 10–13 passed the repeated verification gate and the conventional implementation, observability, and documentation commits were pushed to `origin/main` over SSH.
 - [accepted] plan-projection-scope: Treat the graceful-drain plan as a supporting sub-plan; use the Crashsafe engine plan as the full implementation projection.
 - [accepted] final-submission-phase: After event history and its failure tests pass, finish with a succinct README, followable deterministic demo, and recorded terminal video.
 - [accepted] event-history-authority: Treat immutable workflow events as the logical authority and mutable workflow/step rows as the scheduling projection; verify their equality with a pure reducer.
