@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-08T18:07:00Z
+Updated: 2026-09-08T22:05:00Z
 
 ## Claims
 
@@ -11,7 +11,7 @@ Updated: 2026-09-08T18:07:00Z
 - [settled] implemented-scope: The repository implements a configurable local SQLite-backed worker pool, renewable workflow leases and fencing, append-only typed event history, rebuildable scheduling projections, persisted per-step and tool-wide retry scheduling, graceful drain, timeline observability, deterministic failures, and real process recovery tests.
 - [settled] ambiguous-charge-proof: The demo kills the worker after the mock tool commits a charge but before the worker persists completion, then recovers with one charge in the durable ledger.
 - [settled] graceful-drain-verified: A real-process test sends SIGTERM during a delayed committed charge response; the worker commits only the in-flight step, exits cleanly, and a restart finishes with one of each side effect.
-- [settled] full-plan-projected: The full baseline and extension plan, including completed event-history outcomes and planned Phases 10–13, is stored at `.memory/projections/plans/crashsafe-engine.md`.
+- [settled] full-plan-projected: The full baseline and extension plan, including completed Phases 0–13 and accepted pending JSON-workflow Phases 14–15, is stored at `.memory/projections/plans/crashsafe-engine.md`.
 - [settled] durability-scope: Shards and history trees remain deferred; a bounded local lease and fence token are now planned specifically to add safe multi-worker ownership without changing the SQLite durability boundary.
 - [settled] event-history-implemented: Phase 8 added an append-only, per-workflow event stream that commits atomically with rebuildable `workflows` and `steps` projections.
 - [settled] retry-policy-boundary: Persisting `next_attempt_at` is durable per-step state; the expansion also plans a persisted monotonic tool-wide `blocked_until` derived from `Retry-After`.
@@ -19,7 +19,7 @@ Updated: 2026-09-08T18:07:00Z
 - [settled] readme-completed: The final README follows the agreed problem, requirements, architecture, data/invariants, state-machine, and demo structure.
 - [settled] temporal-comparison-verified: An isolated persistent Temporal server with one worker reproduces the ambiguous charge outcome; Activity attempt 2 reuses the application key, returns the cached tool result, and completes with exactly one charge.
 - [settled] temporal-history-difference: In the observed run, Temporal represented the lost first execution through Activity attempt 2 with the prior Start-To-Close timeout, while Crashsafe retains two explicit `StepAttemptStarted` events.
-- [settled] submission-video-recorded: The repository root contains `crashsafe-demo.mov`, a 7.9-second cropped plain-Terminal recording showing a real worker `SIGKILL`, two charge attempts with one stable key, one durable charge, projection audit success, workflow completion, and the history-derived event timeline; extracted frames were inspected across the full recording.
+- [superseded] original-submission-video: The earlier 7.9-second fixed-workflow recording was replaced after the JSON DAG and consolidated-demo revision.
 - [settled] feature-test-manual: `TESTING.md` provides concise, reproducible checks for crash recovery, safe retries, and graceful drain.
 - [settled] handoff-ready-memory: Project memory lives under `.memory/`; the current projection and dated journal identify the verified implementation and completed Git handoff.
 - [settled] evaluator-focused-readme: The README now follows the requested review structure: built/cut scope, key decisions and uncertainties, five precise failure modes, and concrete AI usage mistakes and verification.
@@ -29,6 +29,17 @@ Updated: 2026-09-08T18:07:00Z
 - [settled] adaptive-backoff-model-implemented: A durable per-tool cooldown propagates the maximum `Retry-After` deadline across workflows, workers, and restarts.
 - [settled] deterministic-feature-demo: `make demo-features` starts two workers and two workflows, forces exactly one 429, shows the shared 500 ms wait and both worker IDs, drains cleanly, and finishes with two of each side effect.
 - [settled] expanded-final-verification: The 28-test suite passed three consecutive runs; Ruff, strict mypy, `make demo`, and `make demo-features` then passed again.
+- [accepted] json-dag-plan: Phases 14–15 replace hardcoded seeding with a complete materialized JSON DAG submitted directly to `POST /workflows`, validated by Pydantic and graph checks, persisted in `WorkflowCreated`, and demonstrated with two different payloads.
+- [settled] dag-scope-boundary: The accepted DAG contains allowlisted operations, concrete request bodies, explicit dependencies, and deterministic array order; it excludes registries, templates, separate inputs, output references, expressions, Python workflow code, definition CRUD, conditions, loops, dynamic fan-out, and intra-workflow parallel execution.
+- [accepted] audit-feature-cut: Remove the public audit model, endpoint, timeline flag, demo output, and feature language while preserving the reducer, atomic event/projection commits, internal reconstruction, and equality assertions in failure tests.
+- [accepted] phase-15-repository-cleanup: Remove `experiments/`, consolidate the two current demo scripts into one `scripts/demo.py` invoked through uv, retain broader feature evidence in tests and `TESTING.md`, and keep only the current root video.
+- [accepted] uv-only-build: Phase 15 removes the Makefile, commits `uv.lock`, uses a standard `dev` dependency group, and documents only `uv sync` and `uv run ...` commands.
+- [settled] json-dag-implemented: `POST /workflows` now accepts a fully materialized, validated JSON DAG; `WorkflowCreated` v3 durably snapshots the concrete graph, and dependency projections drive deterministic readiness.
+- [settled] public-audit-removed: The audit model and endpoint are removed while `projection_matches_history`, reducer tests, and projection rebuild retain the underlying correctness check internally.
+- [settled] repository-surface-cleaned: The Temporal experiment, Makefile, two old demo scripts, and alternate demo targets are removed; the tracked surface has one `scripts/demo.py`, two example JSON definitions, and `uv.lock`.
+- [settled] consolidated-demo-verified: The uv-run demo submits two workflows, starts two workers, kills the paid owner after charge commit, resumes at fence 2 with the same key, and finishes with one charge, two provisions, and three notifications.
+- [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
+- [settled] refreshed-submission-video: The root `crashsafe-demo.mov` is a 1920×1080 H.264 plain-Terminal recording of the uv demo. Frames at 1, 6, 12, 18, and 23 seconds were inspected and show the live kill, unknown engine outcome, fenced recovery, exact ledger, timelines, and PASS line.
 
 ## Commitments
 
@@ -48,4 +59,7 @@ Updated: 2026-09-08T18:07:00Z
 - [accepted] tool-wide-cooldown: On 429, atomically persist both the step retry decision and the maximum tool-level blocked-until deadline consulted by all workers.
 - [accepted] timeline-is-derived: Build observability from immutable events rather than a second mutable truth, and show unmatched attempts honestly as unknown outcomes.
 - [accepted] record-submission-video: Keep the plain-Terminal `crashsafe-demo.mov` at the repository root and link it from the README.
-- [accepted] temporal-remains-experiment: Keep Temporal and its Python 3.12 SDK outside Crashsafe's runtime dependencies under `experiments/temporal_compare/`.
+- [superseded] temporal-remains-experiment: The earlier isolated Temporal comparison is superseded by Phase 15 repository cleanup; remove `experiments/temporal_compare/` and retain only concise prose comparison where useful.
+- [accepted] immutable-submitted-plan: Validate and persist the complete submitted workflow, dependency edges, concrete requests, and server-generated stable per-step keys atomically in `WorkflowCreated`; recovery requires no external definition source.
+- [accepted] deterministic-dag-scheduling: A step is ready only when all declared dependencies are completed; ties use submitted array order, and a workflow-level lease keeps ready branches sequential within one run.
+- [accepted] one-reviewable-demo: The final repository exposes one canonical demo script and one demo command that submit two JSON workflows, exercise concurrent workers and live crash takeover, and finish with exactly one charge; adaptive backoff and graceful drain remain independently testable rather than adding alternate demo harnesses.

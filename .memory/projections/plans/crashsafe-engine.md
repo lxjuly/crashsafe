@@ -1,26 +1,28 @@
 # Crashsafe Engine — Full Implementation Plan
 
-Status: durability baseline completed; concurrency, observability, and adaptive backoff planned
+Status: current engine complete; materialized JSON DAG revision accepted and pending
 Baseline implemented: 2026-09-06  
-Plan revised: 2026-09-07
+Plan revised: 2026-09-08
 Assignment: Stack AI Senior Software Engineer Take-Home — Durable Execution Engine
 
 ## 1. Objective
 
-Build a small workflow runtime that executes an ordered
-`charge → provision → notify` workflow and remains correct when the worker dies
-at any instruction boundary. Demonstrate the hardest ambiguous outcome: the
-charge commits at the external tool, the worker dies before recording success,
-and recovery finishes without a second charge.
+Build a small workflow runtime whose `POST /workflows` endpoint accepts a fully
+materialized JSON execution plan and that remains correct when the worker dies
+at any instruction boundary. Preserve the hardest ambiguous outcome: a charge
+commits at the external tool, the worker dies before recording success, and
+recovery finishes without a second charge.
 
 The engine must be straightforward to run, typed throughout, and divided into
 engine, persistence, API, worker, and mock-tool boundaries.
 
-The durability baseline is complete: append-only workflow history is the
-authoritative logical record and `workflows`/`steps` are its rebuildable
-scheduling projection. The next milestone expands the assignment scope without
-moving the correctness boundary away from SQLite: a configurable leased worker
-pool, a history-derived timeline, and persisted tool-wide adaptive throttling.
+The durability, leased concurrency, graceful drain, timeline, and adaptive
+backoff baseline is complete. Append-only workflow history remains the
+authoritative logical record and `workflows`/`steps` remain its rebuildable
+scheduling projection. The accepted revision replaces hardcoded workflow
+seeding with a deliberately small, validated JSON DAG submitted per run and
+demonstrates two different workflows without moving the correctness boundary
+away from SQLite.
 
 ## 2. Success criteria
 
@@ -54,6 +56,19 @@ pool, a history-derived timeline, and persisted tool-wide adaptive throttling.
     worker identity, and terminal outcome directly from durable events.
 17. The demo ends with the timeline and summary counts, making the recovery and
     retry behavior understandable without reading raw JSON.
+18. `POST /workflows` accepts immutable workflow metadata and fully materialized
+    steps containing dependencies, allowlisted operations, and concrete request
+    payloads.
+19. Two distinct JSON workflows can complete through the same API and worker
+    runtime without Python workflow code changes.
+20. DAG readiness is deterministic: a step becomes runnable only after all of
+    its declared dependencies have committed `StepCompleted`.
+21. Pydantic and graph validation reject cycles, unknown dependencies,
+    duplicate step IDs, unsupported operations, and invalid operation-specific
+    requests.
+22. Public audit models, endpoints, and demo fields are removed; reducer replay
+    remains mandatory internal verification for every transition and failure
+    test.
 
 ## 3. Chosen scope
 
@@ -63,13 +78,25 @@ pool, a history-derived timeline, and persisted tool-wide adaptive throttling.
 - Safe retries — selected additional feature.
 - Graceful drain — added after the initial engine implementation.
 
-### Planned additional assignment features
+### Implemented additional assignment features
 
 - Concurrent workers — configurable pool, with two workers in the demo and an
   exclusive renewable workflow lease plus fencing.
 - Observability — a history-derived timeline and concise per-run summary.
 - Adaptive backoff — persisted service-wide throttle extension from
   `Retry-After`, shared by all workers and workflows.
+
+### Accepted product capability
+
+- Per-run JSON DAG definitions — the complete concrete plan is validated by
+  Pydantic at `POST /workflows` and snapshotted into `WorkflowCreated`.
+- Dependency-aware scheduling — deterministic ready-node selection without
+  intra-workflow parallel execution.
+- No binding language — every submitted step already contains its final request
+  body; Crashsafe only validates and persists it.
+- Two example payloads — the original paid onboarding flow and a branching paid
+  activation flow whose post-charge provision and receipt notification are
+  independently ready.
 
 ### Supporting capabilities
 
@@ -100,19 +127,26 @@ pool, a history-derived timeline, and persisted tool-wide adaptive throttling.
 
 ### Explicitly deferred
 
-- Shards, history trees/branches, task queues, and ownership transfer.
-- Fan-out, child workflows, and joins.
-- General workflow definitions, versioning, and replay.
+- Shards, history trees/branches, remote task queues, and distributed ownership
+  transfer.
+- Parallel execution of nodes inside one workflow, dynamic fan-out, child
+  workflows, conditions, loops, compensation, and partial-success semantics.
+- Arbitrary Python workflow code, stored definition CRUD, registries, templates,
+  output references, and expression evaluation.
 - Cancellation and mid-request interruption.
 - A graphical UI, tracing backend, or production metrics stack.
 - Rate estimation, token buckets, and cross-tool adaptive control beyond a
   persisted `Retry-After` cooldown per tool.
-- Authentication, multi-tenancy, migrations, and distributed storage.
+- Authentication, multi-tenancy, a general schema-migration framework, and
+  distributed storage.
+- Idempotent workflow creation across repeated client `POST` requests; the
+  exactly-once boundary remains scoped to side effects within one workflow ID.
 
 These cuts keep the correctness argument centered on the network gap between
-two independent durable systems. The planned lease adds only the ownership
-mechanism necessary for a bounded local worker pool; it does not introduce
-distributed shards, remote coordination, or a general scheduler.
+two independent durable systems. The posted JSON is a complete execution plan,
+not an embedded programming language or reusable-definition service. A workflow
+lease still serializes nodes within one run, while multiple workers may execute
+different runs concurrently.
 
 ## 4. Architecture
 
@@ -120,7 +154,10 @@ distributed shards, remote coordination, or a general scheduler.
 Client
   │
   ▼
-FastAPI workflow API ───────► engine.db
+FastAPI workflow API ───────► Pydantic + graph validation
+                                  │ complete immutable plan
+                                  ▼
+                              engine.db
                                   │
                                   ├─ workflow_events (authority)
                                   ├─ workflows + steps (projection)
@@ -139,7 +176,8 @@ FastAPI workflow API ───────► engine.db
 
 ### Components
 
-- `crashsafe/models.py` — typed workflow, step, request, and response models.
+- `crashsafe/models.py` — typed workflow, response, and discriminated
+  operation-specific step models plus workflow-level dependency validation.
 - `crashsafe/storage.py` — SQLite schema and atomic state transitions.
 - `crashsafe/engine.py` — selection, execution, retry policy, and crash hooks.
 - `crashsafe/api.py` — workflow creation and inspection endpoints.
@@ -147,9 +185,10 @@ FastAPI workflow API ───────► engine.db
   graceful-drain lifecycle.
 - `crashsafe/mock_tool.py` — flaky external boundary and durable deduplication.
 - `crashsafe/stack.py` — local process supervisor and configurable worker pool.
-- `crashsafe/observability.py` — planned event-to-timeline projection and
+- `crashsafe/observability.py` — event-to-timeline projection and
   summary formatting.
-- `scripts/demo_ambiguous_charge.py` — deterministic video/demo scenario.
+- `scripts/demo.py` — planned single canonical deterministic demo scenario;
+  replaces the two current demo scripts during Phase 15.
 
 The engine and tool use separate SQLite databases. A shared transaction would
 remove the ambiguity the assignment is intended to test and would not represent
@@ -193,7 +232,7 @@ Minimum event vocabulary:
 
 | Event | Durable fact and required payload |
 |---|---|
-| `WorkflowCreated` | Workflow input plus ordered immutable step definitions, including IDs, positions, requests, and operation keys |
+| `WorkflowCreated` | Complete immutable submitted plan: workflow name plus step IDs, array order, operations, dependencies, concrete requests, tool keys, and generated operation keys |
 | `StepAttemptStarted` | Step ID/name, attempt number, stored request, stable operation key, worker ID, and lease fence token; committed before network I/O |
 | `StepRetryScheduled` | Attempt, normalized error, and absolute `next_attempt_at` chosen by policy |
 | `StepCompleted` | Attempt number and stored tool result |
@@ -222,13 +261,15 @@ so `WorkerDrainRequested` is not part of the workflow history.
 #### Workflow
 
 - `id`
+- immutable submitted workflow name and definition JSON
 - `status`: `running | completed | failed`
-- immutable input JSON
 - created, updated, and completed timestamps
 
 #### Step
 
-- `id`, `workflow_id`, ordered `position`, and operation `name`
+- internal `id`, `workflow_id`, stable client step ID, deterministic order, and
+  allowlisted operation name
+- declared dependency node IDs, normalized into `step_dependencies`
 - `status`: `pending | intent_recorded | retry_wait | completed | failed`
 - immutable request JSON
 - stable, unique operation key
@@ -298,10 +339,14 @@ pending ──record attempt and intent──► intent_recorded
 intent_recorded or retry_wait ──retry budget exhausted──► failed
 ```
 
-Steps execute strictly by position. A step is selectable only when all earlier
-steps are `completed`. A workflow becomes `completed` in the same transaction
-that completes its final step. A permanent failure or exhausted retry budget
-makes the step and workflow terminally `failed`.
+The current implementation executes strictly by position. The accepted DAG
+scheduler instead selects a step only when every declared dependency is
+`completed`, breaking ties by deterministic definition order. A workflow lease
+still permits only one valid worker to advance a particular run, so ready
+branches execute sequentially; the DAG models dependency semantics, not
+intra-workflow parallelism. A workflow becomes `completed` in the same
+transaction that completes its last unfinished node. A permanent failure or
+exhausted retry budget remains fail-fast for the entire workflow.
 
 ## 7. Correctness and transaction boundaries
 
@@ -316,12 +361,13 @@ makes the step and workflow terminally `failed`.
    commit alone.
 4. **Reducer completeness:** event payloads contain every durable input needed
    to reconstruct workflow status, step status, attempt count, output, error,
-   retry time, request, and operation key.
+   retry time, request, operation key, submitted workflow name, deterministic
+   step order, and dependency graph.
 5. **External ambiguity is explicit:** an attempt-start event without a later
    completion or retry event records an unknown outcome, not proof that the
    tool did or did not execute.
 6. **Idempotency identity is immutable:** the operation key originates in
-   `WorkflowCreated`, is repeated in attempt-start events for auditability, and
+   `WorkflowCreated`, is repeated in attempt-start events for traceability, and
    never changes across retries or recovery.
 7. **Fenced ownership:** only the current lease owner and fence token may append
    a worker-originated transition; stale workers may compute but cannot commit.
@@ -329,17 +375,19 @@ makes the step and workflow terminally `failed`.
    `blocked_until`, never shorten it, and all workers consult it before claim.
 
 Normal scheduling reads the projection; it need not fold the full stream on
-every poll. A pure reducer folds events for audit and rebuild. Startup may audit
-the projection, and tests must compare it with the folded result after each
-failure scenario.
+every poll. A pure reducer folds events for reconstruction and correctness
+tests. Projection equality remains an internal invariant checked after failure
+scenarios, but is no longer presented as an assignment feature or public API.
 
 ### Boundary A — workflow creation
 
-One transaction inserts the `WorkflowCreated` event and projects the workflow
-and all three ordered steps, including their immutable payloads and stable
-operation keys. A partially seeded workflow cannot become visible. Projection
-rows may be written before the event within the transaction, but no observer can
-see that internal ordering.
+One transaction inserts the `WorkflowCreated` event and projects the submitted
+workflow, all DAG steps, and their dependency edges, including concrete
+requests and stable operation keys. The committed event contains the complete
+submitted plan, so restart needs no external definition source. A partially
+seeded workflow cannot become visible. Projection rows may be written before
+the event within the transaction, but no observer can see that internal
+ordering.
 
 ### Boundary B — durable intent
 
@@ -809,7 +857,214 @@ Phase 13 is complete only when a reviewer can see both claims independently:
 two workers increase throughput across workflows, and ownership failure still
 reduces to fenced database state plus safe at-least-once tool requests.
 
-## 14. Verification matrix
+### Phase 14 — materialized JSON DAG workflows
+
+Status: complete.
+
+#### 14.1 Minimal request contract
+
+Change `POST /workflows` so its body is the complete concrete execution plan:
+
+```json
+{
+  "name": "paid-activation",
+  "steps": [
+    {
+      "id": "charge",
+      "operation": "charge",
+      "depends_on": [],
+      "request": {
+        "customer_id": "customer-123",
+        "amount_cents": 4200
+      }
+    },
+    {
+      "id": "provision",
+      "operation": "provision",
+      "depends_on": ["charge"],
+      "request": {
+        "customer_id": "customer-123",
+        "plan": "standard"
+      }
+    },
+    {
+      "id": "receipt",
+      "operation": "notify",
+      "depends_on": ["charge"],
+      "request": {
+        "customer_id": "customer-123",
+        "email": "customer@example.com",
+        "message": "Payment received. Activation is in progress."
+      }
+    }
+  ]
+}
+```
+
+There is no separate input object, registry, version resolver, file loader,
+templating, interpolation, output reference, or expression language. Each
+request is already fully materialized when submitted. The engine generates the
+workflow ID and operation keys; clients cannot supply either.
+
+Use a Pydantic discriminated union keyed by `operation` so `charge`,
+`provision`, and `notify` retain their existing typed request validation. A
+workflow-level model validator additionally enforces:
+
+- one to 32 steps, step IDs matching `[A-Za-z0-9_-]{1,64}`, and the existing
+  request-field bounds;
+- unique, nonempty step IDs;
+- only the three allowlisted operations;
+- existing dependency targets, with no self-edge or duplicate edge;
+- acyclicity using a deterministic topological sort;
+- `extra="forbid"` at workflow, step, and operation-request boundaries.
+
+Array order is the deterministic tie-breaker when multiple steps are ready; it
+does not create an implicit dependency. Dependencies must be explicit.
+
+Acceptance: FastAPI returns `422` for invalid request shape, operation payload,
+dependency, or cycle; a valid body becomes durable without workflow-specific
+Python branching.
+
+#### 14.2 Immutable history and schema cutover
+
+- Extend `WorkflowCreated` to schema version 3 with the workflow name and the
+  complete validated step list: client step ID, array order, operation,
+  dependencies, concrete request, `tool_key`, and generated operation key.
+- Generate each key as `"{workflow_id}:{step_id}"`; retries and lease takeovers
+  reuse it unchanged.
+- Replace the workflow projection's specialized input with `name` and the
+  submitted definition JSON. Add stable client step ID and array order to the
+  step projection.
+- Add normalized
+  `step_dependencies(workflow_id, step_id, dependency_step_id)` rows so
+  readiness is queryable without parsing JSON during worker polls.
+- Commit `WorkflowCreated`, the workflow projection, all step projections, and
+  every dependency edge in one `BEGIN IMMEDIATE` transaction.
+- Treat current development databases as a legacy schema at this boundary.
+  Detect a nonempty pre-DAG database and fail with the existing documented
+  instruction to remove `.crashsafe/` and restart rather than inventing
+  dependencies or rewriting old history. No database file is part of the
+  submitted repository.
+
+Acceptance: once `POST /workflows` returns `201`, the entire executable plan is
+recoverable from history alone and no external definition source is required.
+
+#### 14.3 API surface
+
+- Keep one creation endpoint: `POST /workflows` with the materialized JSON body.
+- Keep `GET /workflows`, `GET /workflows/{id}`,
+  `GET /workflows/{id}/events`, and `GET /workflows/{id}/timeline`.
+- Return the workflow name and each step's ID, operation, dependencies, concrete
+  request, generated operation key, and execution state from workflow reads.
+- Remove `GET /workflows/{id}/audit`; add no definition discovery or CRUD
+  endpoints.
+- Update all demos and API tests to submit complete workflow definitions. Since
+  there are no released consumers, use one clear request shape rather than a
+  legacy-body union.
+
+Acceptance: two different JSON bodies execute through the same endpoint,
+storage, reducer, scheduler, and workers.
+
+#### 14.4 Dependency-aware scheduling
+
+- Replace the earlier-position predicate with: a candidate step is runnable
+  only if no dependency row points to a step whose status is not `completed`.
+- Retain `pending`, `intent_recorded`, and eligible `retry_wait` handling,
+  tool-wide cooldown checks, and atomic workflow lease acquisition.
+- When multiple steps are ready, select the lowest submitted array order. A
+  workflow-level lease means they execute sequentially within one run.
+- Complete the workflow atomically with the step completion that leaves no
+  unfinished steps. Do not assume a particular step is “last.”
+- Preserve fail-fast semantics: one terminal step failure appends
+  `StepFailed`/`WorkflowFailed`; downstream steps remain unexecuted.
+- Keep workers generic by dispatching `step.operation` through the existing
+  allowlisted tool client.
+
+Acceptance: no step runs before every dependency completes; two ready branches
+run in deterministic order; independent workflows still run concurrently on
+different workers.
+
+#### 14.5 Reducer correctness, with public audit removed
+
+- Extend the pure reducer to reconstruct workflow metadata, concrete steps,
+  dependencies, attempts, outputs, and workflow terminal state from history.
+- Validate acyclicity, immutable graph structure, stable step keys, legal
+  dependency completion, monotonic attempts, and exactly one creation event.
+- Keep reducer-versus-projection comparison in storage and process tests and
+  retain explicit projection rebuild as an internal recovery/development tool.
+- Remove `WorkflowAudit`, `GET /workflows/{id}/audit`,
+  `TimelineSummary.audit_consistent`, demo `audit` output, and README language
+  that presents audit as an assignment feature.
+- Keep `GET /workflows/{id}/events` and the timeline. They expose durable facts;
+  they do not claim a separate audit product.
+
+This cuts API surface and demo noise, not correctness. Every transition still
+commits its event and projection atomically, and every failure test still folds
+history and asserts exact projection equality.
+
+Acceptance: corrupt or illegal histories fail the reducer; all valid histories
+reconstruct exactly; the public API and demo contain no audit feature.
+
+### Phase 15 — verification, repository cleanup, write-up, and one demo
+
+Status: complete.
+
+1. Add request-model tests for duplicate steps, missing dependencies, cycles,
+   unknown operations, invalid operation requests, size limits, forbidden
+   fields, and stable topological order.
+2. Add storage/engine tests proving dependency readiness, deterministic branch
+   ordering, join-by-workflow-completion, fail-fast behavior, lease recovery,
+   retry persistence, and stable keys derived from client step IDs rather than
+   array position.
+3. Re-run every real-process crash point against the paid-onboarding JSON,
+   especially the ambiguous charge result, and assert reducer/projection
+   equality inside the test rather than printing “audit.”
+4. Add `examples/paid-onboarding.json` and `examples/trial-activation.json`.
+   The paid workflow retains the ambiguous charge; the trial workflow branches
+   after provisioning into customer and internal notifications without adding a
+   second charge.
+5. Replace `scripts/demo_ambiguous_charge.py` and
+   `scripts/demo_extended_features.py` with one reviewable `scripts/demo.py`,
+   run as `uv run python scripts/demo.py`. Its single deterministic narrative
+   must:
+   - submit both JSON workflows;
+   - start two workers so different workflows can progress concurrently;
+   - kill the paid workflow's owner after the tool commits its only charge but
+     before engine completion;
+   - recover under a higher fence with the same operation key;
+   - complete both workflows and print their history-derived timelines;
+   - finish with exactly one charge, two provisions, and three notifications.
+6. Keep adaptive backoff and graceful-drain demonstrations in focused tests and
+   `TESTING.md`; do not add alternate demo modes or scripts merely to display
+   every implemented feature.
+7. Remove the entire `experiments/` tree, all Make targets, and every
+   README/manual/memory reference that suggests the Temporal experiment is part
+   of the submission. Temporal may remain a brief architectural comparison in
+   prose, not executable repository scope.
+8. Use uv as the only project interface: move development dependencies to the
+   `dev` dependency group, commit `uv.lock`, remove the Makefile, and document
+   `uv sync` plus `uv run ...` commands. Remove obsolete demo targets, helper
+   scripts, stale recordings, generated state, caches, and superseded
+   documentation. After cleanup, `scripts/` contains only `demo.py`, the root
+   contains only the current `crashsafe-demo.mov`, and `rg --files` shows no
+   generated databases, logs, virtual environments, or Python caches.
+9. Rewrite README built/cut scope, execution model, failure table, request
+   example, and demo commands. State explicitly that Crashsafe executes a
+   submitted materialized DAG; it does not parse templates or replay arbitrary
+   workflow code like Temporal.
+10. Update `TESTING.md` around one canonical demo plus focused feature tests.
+    Refresh `crashsafe-demo.mov` because the request body, step IDs, consolidated
+    flow, and removal of public audit output make the current video outdated.
+11. Run the entire suite at least three times, then run Ruff, strict mypy, and
+    the sole `uv run python scripts/demo.py` command before marking either phase
+    complete.
+
+Phase 15 is complete only when two submitted JSON workflows execute through the
+same generic engine, the original kill/recovery guarantee is unchanged, the
+public submission no longer markets audit as a feature, and a reviewer sees one
+demo script, one demo command, one video, and no experimental implementation.
+
+## 16. Verification matrix
 
 | Property | Evidence |
 |---|---|
@@ -821,13 +1076,13 @@ reduces to fenced database state plus safe at-least-once tool requests.
 | Crash after intent, before request | Hard-exit process test |
 | Crash after response, before engine commit | Hard-exit process test |
 | Crash after engine completion commit | Hard-exit process test |
-| Tool committed, worker killed before response | Real `SIGKILL` process test and `make demo` |
+| Tool committed, worker killed before response | Real `SIGKILL` process test and canonical uv demo |
 | Graceful signal during in-flight response | Real `SIGTERM` process test |
 | Static quality | Ruff and strict mypy |
 | Append-only enforcement | Direct SQL update/delete rejection tests |
 | Event/projection transaction atomicity | Exception rollback and real-process `SIGKILL` tests |
 | Per-workflow event ordering | Unique, contiguous-sequence tests |
-| Projection reconstruction | Reducer audit and explicit rebuild tests |
+| Projection reconstruction | Internal reducer equality and explicit rebuild tests |
 | Ambiguous outcome represented faithfully | History assertion plus one-entry tool ledger |
 | Retry decision independent of later config | Persisted timestamp/restart test |
 | Atomic workflow claim under contention | Two-worker lease contention test |
@@ -837,14 +1092,21 @@ reduces to fenced database state plus safe at-least-once tool requests.
 | Tool-wide `Retry-After` propagation | Two-workflow shared-throttle test |
 | Throttle persistence across restart | Reopened-storage cooldown test with injected clock |
 | Timeline correctness and read-only behavior | Event-derived timeline and API tests |
-| Two-worker crash demo and feature demo | `make demo` and `make demo-features` assertions |
+| Canonical two-workflow crash demo | Sole `uv run python scripts/demo.py` assertions |
+| Adaptive backoff and graceful drain | Focused engine and real-process tests documented in `TESTING.md` |
+| JSON workflow validation | Pydantic and graph validation tests |
+| DAG dependency readiness | Storage tests with blocked and ready nodes |
+| Complete plan persistence | History-only reconstruction and restart tests |
+| Generic execution of two workflows | Canonical uv demo and API tests |
+| Reducer correctness without public audit | Failure tests plus removed endpoint/summary assertions |
+| Reviewable repository surface | Verified inventory: one demo script, one video, no `experiments/` or generated state |
 
 Verified after the expansion: 28 tests passed, Ruff passed, strict mypy passed,
 and both terminal demos passed. The mandatory demo transfers ownership from
 worker 1 to worker 2 after `SIGKILL`; the feature demo runs two workers and two
 workflows concurrently while forcing one durable shared cooldown.
 
-## 15. Risks discovered and corrections
+## 17. Risks discovered and corrections
 
 1. The first scaffold targeted TypeScript before the assignment was accessible.
    Reading the full page corrected the implementation to required Python and
@@ -860,9 +1122,9 @@ workflows concurrently while forcing one durable shared cooldown.
    reduced to Git-tracked Chronelle-style project memory, keeping the take-home
    focused on durable workflows.
 
-## 16. Completion boundary and later work
+## 18. Completion boundary and later work
 
-The core durability implementation is complete: append-only event history,
+The current durability implementation is complete: append-only event history,
 atomic projection updates, reducer reconstruction, graceful drain, and the
 ambiguous-outcome evidence all pass.
 
@@ -872,9 +1134,18 @@ durability guarantee did not move: SQLite transactions define accepted engine
 state, fence tokens reject stale owners, and external exactly-once effects still
 depend on durable tool idempotency.
 
-Even after this expansion, a production distributed engine would separately
+The accepted next boundary is a materialized JSON DAG submitted with each run,
+not a reusable-definition service or general workflow language. It adds an
+immutable graph snapshot, dependency-aware readiness, and two example payloads
+while preserving the same history, transaction, fencing, and idempotency
+guarantees. Public audit presentation is removed, while reducer reconstruction
+stays in the correctness test suite. The submission surface is reduced to one
+canonical demo script, one demo command, one current recording, and no
+experimental implementation tree.
+
+Even after this revision, a production distributed engine would separately
 require remote ownership consensus, shards, durable task queues, cross-node
-clock assumptions, history partitioning, definition versioning, migrations,
-authentication, and multi-tenant isolation. The planned worker pool is bounded
-local concurrency, not a claim that those distributed-system problems are
-solved.
+clock assumptions, history partitioning, reusable definition lifecycle,
+arbitrary workflow versioning, authentication, and multi-tenant isolation. The
+worker pool remains bounded local concurrency, and the DAG remains a bounded
+concrete execution plan.
