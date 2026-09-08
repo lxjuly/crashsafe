@@ -152,6 +152,9 @@ make test
 make demo
 ```
 
+See [TESTING.md](TESTING.md) for concise, reproducible checks of crash recovery,
+safe retries, and graceful drain.
+
 `make test` runs unit, API, reducer, SQLite atomicity, graceful-drain, and real
 process-recovery tests. `make demo` uses isolated state under `.crashsafe/demo`,
 disables random flakiness, and performs the required ambiguous-charge scenario.
