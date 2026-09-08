@@ -673,9 +673,9 @@ Outcome:
   model/invariants/state-machine/demo format.
 - Updated `make demo` with four readable checkpoints and assertions for event
   history, same-key recovery, projection consistency, and the durable ledger.
-- Recorded root-level `crashsafe-demo.mov`: a 13-second plain-terminal
-  `SIGKILL` recovery with same-key attempts, history audit, and one-charge
-  evidence.
+- Recorded root-level `crashsafe-demo.mov`: a 7.9-second cropped plain-terminal
+  `SIGKILL` recovery with same-key attempts, history audit, one-charge evidence,
+  and the final history-derived timeline.
 
 ### Phase 10 — configurable leased worker pool
 

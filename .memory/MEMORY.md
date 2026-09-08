@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-08T06:03:08Z
+Updated: 2026-09-08T18:07:00Z
 
 ## Claims
 
@@ -19,7 +19,7 @@ Updated: 2026-09-08T06:03:08Z
 - [settled] readme-completed: The final README follows the agreed problem, requirements, architecture, data/invariants, state-machine, and demo structure.
 - [settled] temporal-comparison-verified: An isolated persistent Temporal server with one worker reproduces the ambiguous charge outcome; Activity attempt 2 reuses the application key, returns the cached tool result, and completes with exactly one charge.
 - [settled] temporal-history-difference: In the observed run, Temporal represented the lost first execution through Activity attempt 2 with the prior Start-To-Close timeout, while Crashsafe retains two explicit `StepAttemptStarted` events.
-- [settled] submission-video-recorded: The repository root contains `crashsafe-demo.mov`, a 13-second plain-Terminal recording showing a real worker `SIGKILL`, two charge attempts with one key, and one durable charge; macOS Quick Look successfully rendered its terminal content during final artifact verification.
+- [settled] submission-video-recorded: The repository root contains `crashsafe-demo.mov`, a 7.9-second cropped plain-Terminal recording showing a real worker `SIGKILL`, two charge attempts with one stable key, one durable charge, projection audit success, workflow completion, and the history-derived event timeline; extracted frames were inspected across the full recording.
 - [settled] feature-test-manual: `TESTING.md` provides concise, reproducible checks for crash recovery, safe retries, and graceful drain.
 - [settled] handoff-ready-memory: Project memory lives under `.memory/`; the current projection and dated journal identify the verified implementation and completed Git handoff.
 - [settled] evaluator-focused-readme: The README now follows the requested review structure: built/cut scope, key decisions and uncertainties, five precise failure modes, and concrete AI usage mistakes and verification.
