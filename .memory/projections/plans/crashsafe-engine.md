@@ -1,6 +1,6 @@
 # Crashsafe Engine — Full Implementation Plan
 
-Status: implementation, README, and video completed
+Status: durability baseline completed; concurrency, observability, and adaptive backoff planned
 Baseline implemented: 2026-09-06  
 Plan revised: 2026-09-07
 Assignment: Stack AI Senior Software Engineer Take-Home — Durable Execution Engine
@@ -16,10 +16,11 @@ and recovery finishes without a second charge.
 The engine must be straightforward to run, typed throughout, and divided into
 engine, persistence, API, worker, and mock-tool boundaries.
 
-The next durability milestone is an append-only workflow event history. It will
-be the authoritative logical record of what the engine committed. The existing
-`workflows` and `steps` rows remain the efficient scheduling projection, but
-must be reproducible by folding the event stream.
+The durability baseline is complete: append-only workflow history is the
+authoritative logical record and `workflows`/`steps` are its rebuildable
+scheduling projection. The next milestone expands the assignment scope without
+moving the correctness boundary away from SQLite: a configurable leased worker
+pool, a history-derived timeline, and persisted tool-wide adaptive throttling.
 
 ## 2. Success criteria
 
@@ -28,8 +29,9 @@ must be reproducible by folding the event stream.
 3. Before every tool request, the engine durably stores the request payload,
    operation intent, attempt count, and stable idempotency key.
 4. Retries and restarts reuse the same operation key.
-5. Retry schedules survive restart. Interpreting `Retry-After` is retry-policy
-   configuration, not part of the durability guarantee.
+5. Retry schedules survive restart. A tool's `Retry-After` also advances a
+   persisted tool-wide throttle so other workflows do not immediately call the
+   same throttled service.
 6. The mock tool atomically stores its side effect and idempotency result.
 7. A duplicate request returns the original reference without repeating the
    side effect; conflicting reuse of a key is rejected.
@@ -42,14 +44,32 @@ must be reproducible by folding the event stream.
     events, and the event append and projection update commit together.
 12. Folding a workflow's event history reconstructs the same workflow and step
     state used by the worker.
+13. `CRASHSAFE_WORKERS` controls the local worker count; the default remains one
+    and the concurrency demo runs two.
+14. An atomic renewable workflow lease gives only one worker a valid claim at a
+    time; a monotonically increasing fence token rejects stale commits.
+15. Two workers execute different workflows concurrently, while a killed lease
+    owner is recovered after expiry using the original operation key.
+16. A read-only timeline shows ordered steps, attempts, retries, persisted waits,
+    worker identity, and terminal outcome directly from durable events.
+17. The demo ends with the timeline and summary counts, making the recovery and
+    retry behavior understandable without reading raw JSON.
 
 ## 3. Chosen scope
 
-### Implemented assignment features
+### Baseline implemented assignment features
 
 - Crash-safe resume — mandatory.
 - Safe retries — selected additional feature.
 - Graceful drain — added after the initial engine implementation.
+
+### Planned additional assignment features
+
+- Concurrent workers — configurable pool, with two workers in the demo and an
+  exclusive renewable workflow lease plus fencing.
+- Observability — a history-derived timeline and concise per-run summary.
+- Adaptive backoff — persisted service-wide throttle extension from
+  `Retry-After`, shared by all workers and workflows.
 
 ### Supporting capabilities
 
@@ -75,24 +95,24 @@ must be reproducible by folding the event stream.
 - Exponential delay parameters, maximum attempts, jitter, and interpretation of
   `Retry-After` decide *when* another attempt is made.
 - They do not change the at-least-once request or external-idempotency guarantee.
-- Crashsafe may retain numeric `Retry-After` support, but the event schema stores
-  the resulting retry decision rather than coupling history to an HTTP header.
+- The event schema stores the selected absolute retry time, while a separate
+  durable tool throttle stores the maximum service-wide blocked-until time.
 
 ### Explicitly deferred
 
-- Concurrent workers, claims, leases, and fencing.
 - Shards, history trees/branches, task queues, and ownership transfer.
 - Fan-out, child workflows, and joins.
 - General workflow definitions, versioning, and replay.
 - Cancellation and mid-request interruption.
-- A timeline UI or metrics system.
-- Tool-wide adaptive throttling.
+- A graphical UI, tracing backend, or production metrics stack.
+- Rate estimation, token buckets, and cross-tool adaptive control beyond a
+  persisted `Retry-After` cooldown per tool.
 - Authentication, multi-tenancy, migrations, and distributed storage.
 
 These cuts keep the correctness argument centered on the network gap between
-two independent durable systems. Sharding, branching, leases, and fencing solve
-distribution, concurrency, and scale. They are not required to demonstrate
-single-worker crash durability.
+two independent durable systems. The planned lease adds only the ownership
+mechanism necessary for a bounded local worker pool; it does not introduce
+distributed shards, remote coordination, or a general scheduler.
 
 ## 4. Architecture
 
@@ -103,10 +123,13 @@ Client
 FastAPI workflow API ───────► engine.db
                                   │
                                   ├─ workflow_events (authority)
-                                  └─ workflows + steps (projection)
+                                  ├─ workflows + steps (projection)
+                                  ├─ workflow_leases (owner + fence)
+                                  └─ tool_throttles (shared cooldown)
                                   ▲
-                                  │ atomic event + projection commits
-                              single worker
+                                  │ fenced atomic transitions
+                         configurable worker pool
+                              worker-1  worker-2
                                   │ at-least-once HTTP + stable key
                                   ▼
                          flaky mock tool API ───────► tools.db
@@ -120,9 +143,12 @@ FastAPI workflow API ───────► engine.db
 - `crashsafe/storage.py` — SQLite schema and atomic state transitions.
 - `crashsafe/engine.py` — selection, execution, retry policy, and crash hooks.
 - `crashsafe/api.py` — workflow creation and inspection endpoints.
-- `crashsafe/worker.py` — single polling worker and graceful-drain lifecycle.
+- `crashsafe/worker.py` — polling worker, lease renewal, fencing, and
+  graceful-drain lifecycle.
 - `crashsafe/mock_tool.py` — flaky external boundary and durable deduplication.
-- `crashsafe/stack.py` — local process supervisor.
+- `crashsafe/stack.py` — local process supervisor and configurable worker pool.
+- `crashsafe/observability.py` — planned event-to-timeline projection and
+  summary formatting.
 - `scripts/demo_ambiguous_charge.py` — deterministic video/demo scenario.
 
 The engine and tool use separate SQLite databases. A shared transaction would
@@ -168,7 +194,7 @@ Minimum event vocabulary:
 | Event | Durable fact and required payload |
 |---|---|
 | `WorkflowCreated` | Workflow input plus ordered immutable step definitions, including IDs, positions, requests, and operation keys |
-| `StepAttemptStarted` | Step ID/name, attempt number, stored request, and stable operation key; committed before network I/O |
+| `StepAttemptStarted` | Step ID/name, attempt number, stored request, stable operation key, worker ID, and lease fence token; committed before network I/O |
 | `StepRetryScheduled` | Attempt, normalized error, and absolute `next_attempt_at` chosen by policy |
 | `StepCompleted` | Attempt number and stored tool result |
 | `StepFailed` | Attempt number and terminal error |
@@ -183,6 +209,10 @@ packet left the process. An unmatched attempt-start event therefore means
 `occurred_at` records the committed transition time and may be used to rebuild
 projection timestamps, but never determines event order. `payload_json` is
 canonical JSON; `schema_version` makes later event upcasting explicit.
+
+Concurrency will introduce a version-2 `StepAttemptStarted` payload containing
+`worker_id` and `lease_token`. The reducer will continue to accept version 1 and
+upcast its missing observability metadata, so existing histories remain valid.
 
 Drain signals are process-lifecycle observations, not workflow state changes,
 so `WorkerDrainRequested` is not part of the workflow history.
@@ -207,6 +237,39 @@ so `WorkerDrainRequested` is not part of the workflow history.
 - next eligible attempt timestamp
 - last error
 - created, updated, and completed timestamps
+
+#### Workflow lease — operational control state
+
+- `workflow_id` — one lease row per workflow
+- `owner_id` — unique worker-process identity
+- `fence_token` — monotonically increasing on every successful acquisition
+- `lease_expires_at` — absolute UTC expiry
+- `updated_at` — inspection and renewal timestamp
+
+Lease acquisition runs in `BEGIN IMMEDIATE`: select an eligible workflow whose
+lease is absent, expired, or already owned by this worker; atomically assign the
+owner, increment the token, and return the workflow. Every worker-originated
+attempt, retry, completion, and failure transaction must validate both owner and
+fence token. The lease is deliberately not part of the reconstructable workflow
+state: it is transient coordination state, while accepted fenced transitions
+remain in authoritative history.
+
+The model guarantees one **valid** owner at a time, not exactly-once compute. If
+an old worker pauses beyond lease expiry, a replacement may repeat its request;
+the old worker's later database commit is fenced out and the stable tool key
+makes overlapping external attempts safe.
+
+#### Tool throttle — shared retry control state
+
+- `tool_key` — stable service identity, initially `mock-tool`
+- `blocked_until` — maximum absolute retry time observed for that tool
+- `reason` and `updated_at` — inspection metadata
+
+Steps gain an immutable `tool_key`. On HTTP 429, one transaction schedules the
+current step retry and advances `blocked_until` using
+`max(existing, now + Retry-After)`. Candidate selection excludes every step for
+that tool until the persisted cooldown expires. A shorter concurrent response
+cannot reduce an existing throttle.
 
 #### Mock-tool ledger
 
@@ -260,6 +323,10 @@ makes the step and workflow terminally `failed`.
 6. **Idempotency identity is immutable:** the operation key originates in
    `WorkflowCreated`, is repeated in attempt-start events for auditability, and
    never changes across retries or recovery.
+7. **Fenced ownership:** only the current lease owner and fence token may append
+   a worker-originated transition; stale workers may compute but cannot commit.
+8. **Monotonic tool cooldown:** a 429 may extend a tool's persisted
+   `blocked_until`, never shorten it, and all workers consult it before claim.
 
 Normal scheduling reads the projection; it need not fold the full stream on
 every poll. A pure reducer folds events for audit and rebuild. Startup may audit
@@ -305,15 +372,39 @@ by a hard crash is eligible immediately because its outcome is unknown.
 Exhausted retries or a permanent error append `StepFailed` and
 `WorkflowFailed`, then project both terminal states in the same transaction.
 
+### Boundary G — workflow lease
+
+A worker must acquire or renew the workflow lease before recording an attempt.
+The returned fence token is carried through that attempt. Renewal changes only
+the expiry for the same owner/token; reacquisition after expiry increments the
+token. Every later transition validates the token in its write transaction, so
+an expired worker cannot overwrite state accepted from its replacement.
+
+Lease renewal continues while a synchronous tool request is in flight. During
+graceful drain the worker keeps renewing until the current result is committed,
+then releases the lease and exits without claiming another workflow.
+
+### Boundary H — adaptive tool throttle
+
+When the gateway receives HTTP 429, retry scheduling and extension of the
+tool-wide `blocked_until` occur in one fenced transaction. The current workflow
+records its absolute retry time in history; the shared throttle is operational
+scheduling state. Other workers atomically consult that gate before acquiring
+work for the same tool.
+
 ### Recovery interpretation
 
 After restart, the worker uses the projection to select work:
 
 - `completed` steps are skipped.
 - `retry_wait` steps remain ineligible until their persisted timestamp.
+- steps for a throttled tool remain ineligible until its persisted
+  `blocked_until`, even when their own workflow has not received a 429.
 - `intent_recorded` plus an unmatched `StepAttemptStarted` means the request may
-  have executed, so the worker makes another at-least-once request with the
-  original key.
+  have executed; after the dead owner's lease expires, a new fenced owner makes
+  another at-least-once request with the original key.
+- a live worker presenting an old fence token cannot append completion, retry,
+  or failure after ownership has moved.
 - A projection/history mismatch is corruption or a programming defect, not a
   normal recovery state; the reducer provides a deterministic repair source.
 
@@ -527,6 +618,12 @@ Outcome:
 
 Status: completed.
 
+This baseline submission phase was completed before the scope expansion. The
+README was subsequently reorganized around the evaluator's four requested
+sections: built/cut scope, key decisions and uncertainty, failure modes, and AI
+usage. Phase 13 will update it again only for the additional implemented
+features and evidence.
+
 Rewrite `README.md` as the final submission write-up. Keep it succinct and use
 this order:
 
@@ -576,10 +673,143 @@ Outcome:
   model/invariants/state-machine/demo format.
 - Updated `make demo` with four readable checkpoints and assertions for event
   history, same-key recovery, projection consistency, and the durable ledger.
-- Recorded `docs/crashsafe-demo.mov`: a 23.99-second live `SIGKILL` recovery
-  with assertion-gated history, ledger, and guarantee-boundary evidence.
+- Recorded root-level `crashsafe-demo.mov`: a 13-second plain-terminal
+  `SIGKILL` recovery with same-key attempts, history audit, and one-charge
+  evidence.
 
-## 10. Verification matrix
+### Phase 10 — configurable leased worker pool
+
+Status: complete.
+
+Implementation:
+
+1. Add `CRASHSAFE_WORKERS` (default `1`), `CRASHSAFE_LEASE_TTL`, and
+   `CRASHSAFE_LEASE_RENEW_INTERVAL` settings. Reject invalid combinations such
+   as a renewal interval greater than or equal to the TTL.
+2. Add `workflow_leases` with owner, expiry, and monotonically increasing fence
+   token. Keep lease state outside the event reducer because it is operational
+   ownership, not workflow business state.
+3. Replace `next_runnable_step()` with an atomic claim operation. Under
+   `BEGIN IMMEDIATE`, select an eligible workflow whose lease is absent or
+   expired, exclude tool-throttled candidates, acquire it, and return the step
+   plus fence token.
+4. Require owner and fence token on every worker-originated storage transition.
+   A stale owner receives a typed `LeaseLostError`, discards its result, and
+   performs no further workflow write.
+5. Renew the lease in a small background heartbeat while the worker is blocked
+   in synchronous HTTP. Never hold a SQLite transaction during network I/O.
+6. Release after a committed attempt outcome when no immediately runnable step
+   remains, and on graceful drain after the in-flight attempt commits. A hard
+   crash relies only on expiry.
+7. Make the supervisor start and maintain the configured number of uniquely
+   identified worker processes. PID files and logs must include worker IDs.
+
+Concurrency model:
+
+- Different workflows may execute in parallel.
+- One unexpired lease is the only valid claim for a workflow.
+- Lease expiry permits at-least-once overlapping compute; fencing guarantees
+  that only the current owner can advance engine state.
+- External duplicates remain safe only through the stable tool idempotency key.
+- SQLite still serializes short write transactions; concurrency is gained across
+  the HTTP-bound execution intervals, not by parallel database writers.
+
+Verification and acceptance:
+
+- Two workers claim different workflows and overlap delayed tool calls.
+- Repeated concurrent claim attempts yield one owner/token for a workflow.
+- Renewal prevents takeover during a healthy long request.
+- Killing the owner leaves the workflow unavailable until TTL, then another
+  worker claims it with a higher token and completes with the same key.
+- A deliberately paused stale worker cannot commit after the higher token is
+  issued.
+- Graceful drain finishes, releases its lease, and claims no new workflow.
+
+### Phase 11 — adaptive tool-wide backoff
+
+Status: complete.
+
+Implementation:
+
+1. Add immutable `tool_key` to step definitions and projections; version/upcast
+   existing `WorkflowCreated` payloads with the default `mock-tool` identity.
+2. Add `tool_throttles(tool_key, blocked_until, reason, updated_at)`.
+3. On HTTP 429, parse numeric `Retry-After`, compute one absolute UTC deadline,
+   and atomically append `StepRetryScheduled`, update the step projection, and
+   extend the tool throttle with `max(existing, deadline)`.
+4. Make claim selection exclude every workflow whose next step targets a tool
+   with `blocked_until > now`. All workers use the same durable gate.
+5. Preserve exponential per-step backoff when no valid `Retry-After` is present;
+   do not turn malformed headers into permanent failures.
+6. Use an injectable clock in storage/engine tests so throttle eligibility is
+   deterministic.
+
+This is intentionally a cooldown, not a full rate controller. It reacts to an
+explicit provider instruction and persists that instruction across worker and
+process restarts. It does not estimate capacity, implement a token bucket, or
+claim fairness across tools.
+
+Verification and acceptance:
+
+- A 429 for workflow A prevents workflow B from calling the same tool before
+  the shared deadline.
+- A later, longer `Retry-After` extends the gate; a shorter one cannot reduce it.
+- Restarting all workers during the wait does not reset the deadline.
+- A different `tool_key` remains eligible.
+- At expiry, only normally leased work resumes; idempotency keys are unchanged.
+
+### Phase 12 — history-derived observability
+
+Status: complete.
+
+Implementation:
+
+1. Add typed timeline and summary response models and
+   `GET /workflows/{id}/timeline`.
+2. Derive the timeline from ordered workflow events rather than introducing a
+   second mutable source of truth. Include sequence, relative time, event,
+   step, attempt, worker ID, fence token, selected wait, and outcome.
+3. Add version-2 attempt metadata for worker ID/fence token while keeping the
+   reducer backward compatible with version-1 histories.
+4. Derive summary values: workflow duration, per-step duration, attempt and
+   retry counts, planned wait time, terminal status, and projection-audit result.
+5. Add a compact plain-text formatter used by demos. Unknown outcomes appear as
+   an unmatched attempt rather than as an invented crash event.
+
+Verification and acceptance:
+
+- Timeline ordering always follows per-workflow sequence, never wall-clock sort.
+- Retry waits and repeated same-key attempts are represented correctly.
+- Timeline generation is read-only and leaves event/projection state unchanged.
+- Version-1 histories remain viewable with absent worker metadata.
+- The final demo timeline makes the killed attempt, replacement worker, retry,
+  and terminal outcome understandable in one screen.
+
+### Phase 13 — integrated verification, README, and demos
+
+Status: complete.
+
+1. Keep `make demo` focused on the mandatory proof, but run a two-worker pool:
+   commit the charge, kill its lease owner, wait for expiry/reclaim, recover with
+   the same key, and print the durable timeline plus one-charge ledger.
+2. Add `make demo-features` for multiple workflows and a deterministic 429. Show
+   two workers processing separate workflows, the persisted tool-wide cooldown,
+   delayed eligibility of another workflow, and final timelines.
+3. Extend the process suite with real two-worker claim, expiry, stale-fence,
+   renewal, adaptive-throttle, restart, and timeline tests.
+4. Run the full suite repeatedly to expose timing flakes; keep injected clocks,
+   barriers, and commit files for assertions instead of fixed sleeps.
+5. Revise README built/cut scope, concurrency model, uncertainty, and failure
+   table. Add lease-expiry/stale-owner failure modes without weakening the
+   external idempotency boundary.
+6. Update `TESTING.md`, record a replacement terminal video, and report the new
+   verified test count only after every acceptance criterion passes.
+
+Phase 13 is complete only when a reviewer can see both claims independently:
+two workers increase throughput across workflows, and ownership failure still
+reduces to fenced database state plus safe at-least-once tool requests.
+
+## 14. Verification matrix
 
 | Property | Evidence |
 |---|---|
@@ -600,12 +830,21 @@ Outcome:
 | Projection reconstruction | Reducer audit and explicit rebuild tests |
 | Ambiguous outcome represented faithfully | History assertion plus one-entry tool ledger |
 | Retry decision independent of later config | Persisted timestamp/restart test |
+| Atomic workflow claim under contention | Two-worker lease contention test |
+| Lease renewal and expiry recovery | Delayed-call heartbeat and killed-owner process tests |
+| Stale-owner fencing | Higher-token commit rejection test |
+| Parallel progress across workflows | Barrier-controlled two-worker test |
+| Tool-wide `Retry-After` propagation | Two-workflow shared-throttle test |
+| Throttle persistence across restart | Reopened-storage cooldown test with injected clock |
+| Timeline correctness and read-only behavior | Event-derived timeline and API tests |
+| Two-worker crash demo and feature demo | `make demo` and `make demo-features` assertions |
 
-Final verified state at the time of this projection: 18 tests passed, Ruff
-passed, strict mypy passed, and the recording-oriented ambiguous-charge demo
-passed.
+Verified after the expansion: 28 tests passed, Ruff passed, strict mypy passed,
+and both terminal demos passed. The mandatory demo transfers ownership from
+worker 1 to worker 2 after `SIGKILL`; the feature demo runs two workers and two
+workflows concurrently while forcing one durable shared cooldown.
 
-## 11. Risks discovered and corrections
+## 15. Risks discovered and corrections
 
 1. The first scaffold targeted TypeScript before the assignment was accessible.
    Reading the full page corrected the implementation to required Python and
@@ -621,18 +860,21 @@ passed.
    reduced to Git-tracked Chronelle-style project memory, keeping the take-home
    focused on durable workflows.
 
-## 12. Completion boundary and later work
+## 16. Completion boundary and later work
 
 The core durability implementation is complete: append-only event history,
-atomic projection updates, reducer reconstruction, and failure evidence all
-pass. Concurrency remains intentionally outside the submission.
+atomic projection updates, reducer reconstruction, graceful drain, and the
+ambiguous-outcome evidence all pass.
 
-Phase 9 turned the verified implementation into the succinct README,
-reproducible demo, and linked video artifact. The submission scope is complete.
-Optional usability work could include richer event inspection, selective
-operator tooling, or metrics. Retry-policy tuning remains configuration work.
+The expanded submission implements the leased configurable worker pool, shared
+adaptive cooldown, history-derived timeline, and two-worker demos. The
+durability guarantee did not move: SQLite transactions define accepted engine
+state, fence tokens reject stale owners, and external exactly-once effects still
+depend on durable tool idempotency.
 
-A production distributed engine would separately require concurrent ownership,
-claims, renewable leases, fencing, shards, task queues, history partitioning,
-definition versioning, migrations, authentication, and multi-tenant isolation.
-Those solve a different problem and are outside Crashsafe's durability proof.
+Even after this expansion, a production distributed engine would separately
+require remote ownership consensus, shards, durable task queues, cross-node
+clock assumptions, history partitioning, definition versioning, migrations,
+authentication, and multi-tenant isolation. The planned worker pool is bounded
+local concurrency, not a claim that those distributed-system problems are
+solved.

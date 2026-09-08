@@ -3,55 +3,74 @@
 Crashsafe is a small durable workflow engine for the fixed sequence
 `charge → provision → notify`, built for the
 [Stack AI take-home](https://stack-ai.notion.site/Senior-Software-Engineer-Take-Home-Durable-Execution-Engine-3a7974ca255c811d9ffac55e5ad72a4a).
-It is written in Python with FastAPI, Pydantic, and SQLite.
+It uses Python, FastAPI, Pydantic, and SQLite.
 
-Its core guarantee is deliberately narrow: workflow state survives arbitrary
-worker termination, and incomplete external calls are retried **at least once**.
-Exactly one external side effect is possible only when the tool durably honors
-the stable idempotency key supplied by Crashsafe.
+The guarantee is deliberately narrow: engine state survives arbitrary worker
+termination and incomplete external calls are retried **at least once**. Exactly
+one external side effect requires the called tool to durably honor Crashsafe's
+stable idempotency key.
 
 ## 1. What I built and what I cut
 
 ### Built
 
-- **Crash-safe resume.** One worker persists workflow input, ordered steps,
-  request payloads, operation keys, outputs, and retry eligibility in SQLite.
-- **Append-only event history.** Typed workflow events are the logical record;
-  indexed workflow and step rows are rebuildable scheduling projections. Each
-  event and its projection update commit in one transaction.
-- **At-least-once requests with idempotent effects.** Intent is committed before
-  HTTP I/O. A retry reuses the same operation key. The mock tool atomically
-  stores its side effect and cached response in a separate SQLite database.
-- **Safe retries.** The mock tool can return HTTP 429. Crashsafe persists the
-  selected absolute `next_attempt_at`, including numeric `Retry-After`, so a
-  restart does not reset or recalculate an existing wait.
-- **Graceful drain.** `SIGTERM` and `SIGINT` stop admission of new work, allow
-  the current synchronous attempt and state transaction to finish, then exit.
-- **Inspectable evidence.** FastAPI exposes workflows, history, and a reducer
-  audit. Tests use real child processes, deterministic crash hooks, and durable
-  commit signals rather than simulated exceptions alone.
+- **Crash-safe resume.** Workflow input, ordered steps, request intent, stable
+  operation keys, outputs, and retry eligibility survive `kill -9`.
+- **Append-only event history.** Typed per-workflow events are the logical
+  record. Mutable workflow and step rows are rebuildable scheduling projections;
+  an event and its projection update commit in one SQLite transaction.
+- **Safe retries and idempotent effects.** The mock tool atomically stores each
+  side effect and its idempotency result in a separate durable database. A lost
+  response is recovered with the same key and original result.
+- **Concurrent workers.** `CRASHSAFE_WORKERS` defaults to one and can run a local
+  pool. A renewable workflow lease prevents simultaneous valid ownership;
+  monotonically increasing fence tokens reject a stale owner's state writes.
+- **Graceful drain.** `SIGTERM`/`SIGINT` stops admission, finishes the current
+  synchronous attempt and state commit, releases its lease, and exits.
+- **Adaptive backoff.** A 429 persists both the step's absolute retry time and a
+  maximum tool-wide cooldown. Every worker consults that gate, so another
+  workflow cannot start a new request to the same tool before `Retry-After`.
+- **Observability.** `GET /workflows/{id}/timeline` folds immutable history into
+  sequence, relative time, step, attempt, worker/fence, waits, outcomes, and an
+  audit summary. Both demos print this view.
+- **Failure evidence.** Deterministic 429 and hard-crash injection, real
+  `SIGKILL`/`SIGTERM` process tests, history reconstruction, and two runnable
+  terminal demos exercise the boundaries above.
 
 ### Cut
 
-I intentionally skipped concurrent workers, leases and fencing, distributed
-storage, shards/history trees, fan-out, cancellation, compensation, arbitrary
-workflow definitions, authentication, and a UI. Those features primarily solve
-coordination, scale, or product breadth. Adding them would obscure the requested
-single-worker durability proof and introduce a different class of correctness
-problems.
+I skipped distributed storage and consensus, shards/history trees, remote task
+queues, fan-out/DAGs, cancellation and compensation, arbitrary workflow code,
+authentication, tracing infrastructure, and a graphical UI. The local lease
+model adds bounded concurrency without pretending SQLite is a distributed
+coordinator. The adaptive policy is a persisted provider-directed cooldown, not
+a token bucket or capacity estimator.
 
-Temporal is not a runtime dependency. A small comparison under
-`experiments/temporal_compare/` checks the same ambiguous charge with one
-Temporal worker, but it is kept outside the engine.
+Temporal is not a runtime dependency. `experiments/temporal_compare/` contains
+an optional one-worker comparison of the same ambiguous-charge scenario.
 
 ## 2. Key decisions
 
-### Execution model and state machine
+### Execution model and architecture
 
-A single polling worker selects the first eligible step whose predecessors are
-complete. It performs one attempt synchronously and then polls again. `engine.db`
-contains history and scheduling state; the independently durable mock tool owns
-`tools.db`.
+The FastAPI service only creates and reads workflows. Independently polling
+worker processes execute one synchronous attempt at a time. `engine.db` owns
+history, projections, leases, and tool cooldowns; the mock service independently
+owns `tools.db`, including its side-effect ledger and idempotency responses.
+
+```text
+FastAPI ──create/read──► engine.db ◄──claim/fenced commits── workers (1..N)
+                           │                                  │
+                           │ append-only history              │ HTTP + stable key
+                           │ + rebuildable projections         ▼
+                           └────────────────────────────── mock tool ──► tools.db
+```
+
+SQLite uses WAL mode and `synchronous=FULL` on every connection. Write
+transactions are short and never span network I/O. SQLite serializes those
+writes, while workers overlap the slower HTTP calls for different workflows.
+
+### State machine
 
 ```text
 pending ──attempt committed──► intent_recorded
@@ -59,87 +78,85 @@ pending ──attempt committed──► intent_recorded
                          success   │       │ retryable failure
                                    ▼       ▼
                               completed  retry_wait
-                                             │ eligible time reached
+                                             │ deadline reached
                                              └────────► intent_recorded
 
 intent_recorded ──permanent failure / exhausted budget──► failed
 ```
 
-The final step completion and workflow completion commit together. Steps are
-never selected out of order.
+The final `StepCompleted`, projection update, `WorkflowCompleted`, and workflow
+projection update share one transaction. Predecessors must be complete before a
+later step can be claimed.
 
-### Why resume stays correct
+### How resume and concurrent ownership stay correct
 
-1. Workflow creation fixes every step's request and operation key.
-2. Before a request, `StepAttemptStarted` and the `intent_recorded` projection
-   commit with SQLite WAL mode and `synchronous=FULL`.
-3. If completion is missing after a restart, the outcome is treated as unknown
-   and the request is repeated with the same key.
-4. The mock tool either has no record and applies the effect, or returns the
-   response atomically cached with the earlier effect. Reusing a key with a
-   different operation or payload is rejected.
-5. `StepCompleted` and its projection commit atomically. A committed step is
-   skipped; a partially written completion transaction is rolled back.
-6. Folding the ordered event stream must equal the stored projections; the
-   audit endpoint makes that invariant observable.
+1. Creation fixes each step's request, tool identity, and operation key.
+2. A worker atomically acquires a workflow lease. Reacquisition increments its
+   fence token; healthy calls renew the lease in a background heartbeat.
+3. Before HTTP I/O, `StepAttemptStarted` and `intent_recorded` commit with the
+   worker ID, fence token, request, and operation key.
+4. If completion is absent after restart, the outcome is unknown. A replacement
+   waits for lease expiry, receives a higher token, and repeats the same request
+   and key.
+5. The tool either applies and records the effect atomically, or returns the
+   result cached by the earlier effect. A key reused for different input is
+   rejected.
+6. Every worker-originated state transition validates unexpired ownership and
+   the exact fence token. A stale result cannot advance engine state.
+7. Folding ordered history must reproduce the scheduling projection; the audit
+   endpoint and timeline expose that invariant.
 
-The engine therefore guarantees durable recovery and at-least-once requests.
-The tool's idempotency transaction—not the workflow event log—provides one
-charge in the ambiguous-response case.
+This provides one valid **committing** owner, not exactly-once compute. A paused
+worker can overlap a replacement after expiry. Fencing protects engine state;
+the stable key and tool transaction protect the external effect.
 
 ### Decisions I am least sure about
 
-- **Keeping both history and projections.** A carefully designed step-state
-  table is enough for this fixed workflow. I kept the event stream because it
-  makes crash boundaries auditable and projections reconstructable, but it adds
-  schema evolution and transition-writing cost that may be excessive here.
-- **Finishing the in-flight call during drain.** This makes shutdown behavior
-  easy to reason about, but deployment grace must exceed the request timeout.
-  An alternative is to cancel immediately and recover the unknown outcome with
-  the same key; that is faster but adds cancellation races without improving
-  the hard-crash guarantee.
+- **Wall-clock leases on one host.** They are compact and adequate for this
+  local SQLite design, but require sensible TTL/renewal settings and a monotonic
+  fence. A production multi-host engine should use a remote consensus-backed
+  coordinator and define clock assumptions explicitly.
+- **One shared cooldown per tool.** It faithfully honors the mock provider's
+  `Retry-After` and survives restart, but is intentionally conservative: one
+  throttled request pauses every workflow targeting that tool.
 
 ## 3. Failure modes
 
-| Exact worker death point | Durable state after restart | Recovery behavior | Why it remains correct |
+| Exact worker death or ownership point | Durable state | Recovery | Why it remains correct |
 |---|---|---|---|
-| Before the attempt transaction commits | Step is `pending`; no `StepAttemptStarted` | Start attempt 1 normally | No request was authorized by durable state and no partial transaction is visible. |
-| After attempt commit, before the HTTP request | Step is `intent_recorded`; attempt 1 has no completion | Start attempt 2 with the same request and key | The first request was not sent, so the retry creates the effect once. An unnecessary duplicate request would still be safe. |
-| After the tool commits the charge, before the worker receives the response | Engine has only the unmatched attempt; `tools.db` has the effect and cached result | Retry with the same key; tool returns the original receipt | Side effect and idempotency result committed atomically, so the charge is not repeated. This is the primary demo. |
-| After the response, while the completion event/projection transaction is uncommitted | Engine still has only the unmatched attempt; tool result is durable | SQLite rolls back the whole incomplete transaction; retry retrieves the cached result | The event append and projection update cannot become visible independently. |
-| After the completion transaction commits | Step is `completed` with output; terminal workflow state may also be committed | Skip the completed step and run only the next eligible step | Completion is a durable scheduling fact; recovery never reopens it. |
+| Before the attempt transaction commits | Step is `pending`; no attempt event | Another worker claims it and starts attempt 1 | No request was authorized by durable state; a partial transaction is invisible. |
+| After intent commits, before HTTP send | Step is `intent_recorded`; lease eventually expires | Replacement records attempt 2 with a higher fence and the same key | The first request was not sent; even an unnecessary duplicate would be idempotent. |
+| After the tool commits charge, before the worker receives its response | Engine has an unmatched attempt; `tools.db` has one effect and cached result | Same-key retry returns the original receipt | Effect and idempotency response committed atomically. This is the primary demo. |
+| Old worker returns after its lease expired and a replacement acquired the workflow | Replacement owns a higher fence token | Old completion is rejected; replacement retries or commits | Only the current owner can mutate engine state. Possible external duplicates still share one key. |
+| After response while completion transaction is uncommitted, or after it commits | Before commit: unmatched attempt. After commit: completed step and output | SQLite rolls back the incomplete transaction and retries, or skips the committed step | Event and projection never become visible separately; committed completion is never reopened. |
 
-An unmatched `StepAttemptStarted` intentionally means **outcome unknown**. It
-does not claim the network request was delivered. Retrying with a stable key is
-what makes both possible worlds safe.
+An unmatched `StepAttemptStarted` means **outcome unknown**. It does not prove a
+request was delivered. The stable key makes both possible worlds safe.
 
 ## 4. AI usage
 
-AI helped enumerate instruction-level crash windows, scaffold typed storage and
-API boundaries, write the event reducer, and build real-process recovery tests.
-It was most useful as a fast adversarial checklist generator; none of its
-durability claims were accepted without an executable failure test.
+AI helped enumerate instruction-level crash windows, scaffold typed boundaries,
+write the reducer and process harness, and generate adversarial checks. It was
+most useful as a fast hypothesis generator; durability claims were accepted only
+after executable tests or direct inspection.
 
-It was also wrong in concrete ways:
+It was also wrong in specific, useful ways:
 
-- It initially interpreted “project memory” as a runtime CRUD subsystem. Reading
-  the request again exposed the scope error, and that API, database, entry point,
-  and its tests were removed.
-- It generated Python 3.10 union syntax that Pydantic evaluated at runtime even
-  though Python 3.9 was supported. The end-to-end run failed; the annotations
-  were replaced with compatible `Optional[...]` forms.
-- An early pass treated SQLite durability settings too globally. Review showed
-  `synchronous=FULL` is connection-local, so every correctness-sensitive
-  connection now configures it explicitly.
-- It overbuilt the first video as a browser console. Reviewing the actual
-  submission need led to deleting that harness and recording the real terminal
-  flow instead.
+- It first interpreted “project memory” as a runtime CRUD service. Rereading the
+  request caught the scope error and that code was removed.
+- It produced Python 3.10 union syntax despite advertised Python 3.9 support.
+  The end-to-end run failed, and compatible `Optional[...]` annotations fixed it.
+- It initially configured `synchronous=FULL` only during schema setup. Review
+  caught that the setting is connection-local, so every connection applies it.
+- The first lease implementation deleted a released lease row, which would
+  reset its fence counter. An adversarial stale-owner review caught the token
+  reuse; released rows now retain and monotonically advance the fence.
+- It initially overbuilt a browser demo. Matching the submission requirement
+  led to a short recording of the real terminal and literal `kill -9` instead.
 
-These errors were caught through requirement rereads, strict mypy and Ruff,
-end-to-end execution, event/projection audits, and process tests that send real
-`SIGKILL` and `SIGTERM` signals. The current suite has 18 tests, including the
-ambiguous charge, an interrupted SQLite transition, deterministic crash points,
-persisted retries, and graceful drain.
+These mistakes were caught with requirement rereads, strict mypy, Ruff, event
+audits, deterministic clocks/barriers, and real child-process signals. The final
+suite has 28 tests.
 
 ## Run and verify
 
@@ -150,19 +167,19 @@ make setup
 make test
 make lint
 make demo
+make demo-features
 ```
 
-`make demo` creates isolated engine and tool databases, waits for the charge to
-commit, sends the worker `kill -9` before completion is saved, starts a
-replacement worker, and verifies two same-key attempts but one durable charge.
+- `make demo` kills worker 1 after the tool commits charge but before the engine
+  saves completion. Worker 2 resumes with a higher fence and the same operation
+  key. The final ledger contains one charge.
+- `make demo-features` starts two workers and two workflows, forces one 429,
+  shows the shared persisted wait, drains both workers, and prints timelines.
 
-[Watch the 13-second plain-Terminal demo](crashsafe-demo.mov).
+[Watch the plain-Terminal crash-recovery demo](crashsafe-demo.mov).
 
-For focused crash-safety, retry, and graceful-drain checks, follow
-[TESTING.md](TESTING.md). To explore the API, run `make run` and open
-<http://127.0.0.1:8000/docs>.
-
-The API surface is intentionally small:
+For focused manual checks, see [TESTING.md](TESTING.md). Run `make run` and open
+<http://127.0.0.1:8000/docs> to explore:
 
 ```text
 POST /workflows
@@ -170,4 +187,5 @@ GET  /workflows
 GET  /workflows/{id}
 GET  /workflows/{id}/events
 GET  /workflows/{id}/audit
+GET  /workflows/{id}/timeline
 ```
