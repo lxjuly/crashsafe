@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-08T00:38:26Z
+Updated: 2026-09-08T03:20:54Z
 
 ## Claims
 
@@ -22,6 +22,7 @@ Updated: 2026-09-08T00:38:26Z
 - [settled] submission-video-recorded: The repository root contains `crashsafe-demo.mov`, a verified 13-second plain-Terminal recording showing a real worker `SIGKILL`, two charge attempts with one key, and one durable charge.
 - [settled] feature-test-manual: `TESTING.md` provides concise, reproducible checks for crash recovery, safe retries, and graceful drain.
 - [settled] handoff-ready-memory: Project memory now lives under `.memory/`; the current projection and dated journal identify the verified state and outstanding Git handoff action.
+- [settled] evaluator-focused-readme: The README now follows the requested review structure: built/cut scope, key decisions and uncertainties, five precise failure modes, and concrete AI usage mistakes and verification.
 
 ## Commitments
 
