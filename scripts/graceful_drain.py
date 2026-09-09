@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -22,8 +23,6 @@ from crashsafe.storage import SQLiteStorage
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".crashsafe" / "graceful-drain"
-API_URL = "http://127.0.0.1:8020"
-TOOL_URL = "http://127.0.0.1:8021"
 
 
 def wait_for(predicate: Callable[[], bool], label: str, timeout: float = 15.0) -> None:
@@ -42,20 +41,42 @@ def healthy(url: str) -> bool:
         return False
 
 
-def workflow_run(run_id: str) -> dict[str, Any]:
-    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}")
+def available_port() -> int:
+    with socket.socket() as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        return int(candidate.getsockname()[1])
+
+
+def wait_for_service(process: subprocess.Popen[bytes], url: str, label: str) -> None:
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if healthy(f"{url}/healthz"):
+            return
+        return_code = process.poll()
+        if return_code is not None:
+            output = ""
+            if process.stdout is not None:
+                output = process.stdout.read().decode(errors="replace").strip()
+            detail = f"\n{output}" if output else ""
+            raise RuntimeError(f"{label} exited during startup ({return_code}){detail}")
+        time.sleep(0.03)
+    raise RuntimeError(f"timed out waiting for {label} at {url}")
+
+
+def workflow_run(api_url: str, run_id: str) -> dict[str, Any]:
+    response = httpx.get(f"{api_url}/workflow_runs/{run_id}")
     response.raise_for_status()
     return response.json()
 
 
-def workflow_events(run_id: str) -> list[dict[str, Any]]:
-    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}/events")
+def workflow_events(api_url: str, run_id: str) -> list[dict[str, Any]]:
+    response = httpx.get(f"{api_url}/workflow_runs/{run_id}/events")
     response.raise_for_status()
     return response.json()
 
 
-def workflow_timeline(run_id: str) -> WorkflowRunTimeline:
-    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}/timeline")
+def workflow_timeline(api_url: str, run_id: str) -> WorkflowRunTimeline:
+    response = httpx.get(f"{api_url}/workflow_runs/{run_id}/timeline")
     response.raise_for_status()
     return WorkflowRunTimeline.model_validate(response.json())
 
@@ -65,13 +86,19 @@ def main() -> None:
         shutil.rmtree(STATE)
     STATE.mkdir(parents=True)
     commit_signal = STATE / "charge-committed.signal"
+    api_port = available_port()
+    tool_port = available_port()
+    while tool_port == api_port:
+        tool_port = available_port()
+    api_url = f"http://127.0.0.1:{api_port}"
+    tool_url = f"http://127.0.0.1:{tool_port}"
     environment = os.environ.copy()
     environment.update(
         {
             "CRASHSAFE_STATE_DIR": str(STATE),
-            "CRASHSAFE_API_PORT": "8020",
-            "CRASHSAFE_TOOL_PORT": "8021",
-            "CRASHSAFE_TOOL_URL": TOOL_URL,
+            "CRASHSAFE_API_PORT": str(api_port),
+            "CRASHSAFE_TOOL_PORT": str(tool_port),
+            "CRASHSAFE_TOOL_URL": tool_url,
             "CRASHSAFE_FLAKY_RATE": "0",
             "CRASHSAFE_COMMIT_SIGNAL_FILE": str(commit_signal),
             "CRASHSAFE_COMMIT_DELAY": "2",
@@ -85,23 +112,25 @@ def main() -> None:
         tool = subprocess.Popen(
             [sys.executable, "-m", "crashsafe.mock_tool"],
             env=environment,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         api = subprocess.Popen(
             [sys.executable, "-m", "crashsafe.api"],
             env=environment,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         children.extend([tool, api])
-        wait_for(lambda: healthy(f"{API_URL}/healthz"), "API")
-        wait_for(lambda: healthy(f"{TOOL_URL}/healthz"), "tool")
+        wait_for_service(tool, tool_url, "tool")
+        wait_for_service(api, api_url, "API")
+        print(f"   API:  {api_url}")
+        print(f"   tool: {tool_url}")
 
         definition = json.loads(
             (ROOT / "workflows" / "paid-onboarding.json").read_text(encoding="utf-8")
         )
-        response = httpx.post(f"{API_URL}/workflow_runs", json=definition)
+        response = httpx.post(f"{api_url}/workflow_runs", json=definition)
         response.raise_for_status()
         run_id = str(response.json()["run_id"])
         print(f"   workflow run: {run_id}\n")
@@ -128,11 +157,11 @@ def main() -> None:
         if worker.wait(timeout=5) != 0:
             raise RuntimeError("draining worker did not exit cleanly")
 
-        drained = workflow_run(run_id)
+        drained = workflow_run(api_url, run_id)
         if drained["status"] != "running" or drained["steps"][0]["status"] != "completed":
             raise RuntimeError("drain did not stop after committing only the in-flight step")
         print("\n4. Timeline after the original worker drains")
-        print(format_timeline(workflow_timeline(run_id)))
+        print(format_timeline(workflow_timeline(api_url, run_id)))
 
         print("\n5. Start a replacement worker to finish the run", flush=True)
         resumed_environment = environment.copy()
@@ -147,9 +176,9 @@ def main() -> None:
         if resumed.wait(timeout=15) != 0:
             raise RuntimeError("replacement worker did not complete the run")
 
-        timeline = workflow_timeline(run_id)
-        events = workflow_events(run_id)
-        ledger = httpx.get(f"{TOOL_URL}/ledger").json()
+        timeline = workflow_timeline(api_url, run_id)
+        events = workflow_events(api_url, run_id)
+        ledger = httpx.get(f"{tool_url}/ledger").json()
         charge_attempts = [
             event
             for event in events

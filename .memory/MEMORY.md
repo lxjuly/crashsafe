@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-09T03:32:00Z
+Updated: 2026-09-09T03:45:00Z
 
 ## Claims
 
@@ -58,6 +58,9 @@ Updated: 2026-09-09T03:32:00Z
   API and tool services, signals an in-flight worker, prints the drained timeline,
   starts a replacement, prints the completed timeline, and asserts exactly one
   charge from one `uv run` command.
+- [settled] drain-startup-robustness: The self-contained graceful-drain script
+  allocates free loopback ports instead of assuming 8020/8021 are available and
+  reports captured service startup output when a child exits early.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints
