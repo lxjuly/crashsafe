@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -104,5 +105,30 @@ def test_deterministic_429_can_target_an_operation(
     assert client.get("/ledger").json() == {
         "charges": 1,
         "provisions": 1,
+        "notifications": 0,
+    }
+
+
+def test_ledger_can_be_filtered_to_one_workflow_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CRASHSAFE_FLAKY_RATE", "0")
+    client = TestClient(create_app(ToolStore(tmp_path / "tool.db")))
+    first_run = str(uuid4())
+    second_run = str(uuid4())
+    request = {"customer_id": "customer-1", "amount_cents": 2500}
+
+    for run_id in (first_run, second_run):
+        response = client.post(
+            "/tools/charge",
+            json=request,
+            headers={"Idempotency-Key": f"{run_id}:charge"},
+        )
+        assert response.status_code == 200
+
+    assert client.get("/ledger").json()["charges"] == 2
+    assert client.get("/ledger", params={"run_id": first_run}).json() == {
+        "charges": 1,
+        "provisions": 0,
         "notifications": 0,
     }

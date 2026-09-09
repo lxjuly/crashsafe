@@ -164,14 +164,19 @@ class ToolStore:
         finally:
             connection.close()
 
-    def summary(self) -> LedgerSummary:
+    def summary(self, run_id: Optional[str] = None) -> LedgerSummary:
+        query = "SELECT operation, COUNT(*) AS count FROM side_effects"
+        parameters: tuple[str, ...] = ()
+        if run_id is not None:
+            # Engine-generated keys are `{run_id}:{step_id}`, so this returns only
+            # effects attributable to one submitted workflow run.
+            query += " WHERE operation_key LIKE ?"
+            parameters = (f"{run_id}:%",)
+        query += " GROUP BY operation"
         connection = self._connect()
         try:
             counts = {
-                row["operation"]: row["count"]
-                for row in connection.execute(
-                    "SELECT operation, COUNT(*) AS count FROM side_effects GROUP BY operation"
-                )
+                row["operation"]: row["count"] for row in connection.execute(query, parameters)
             }
             return LedgerSummary(
                 charges=counts.get(StepName.CHARGE.value, 0),
@@ -263,8 +268,10 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
         return execute(operation, payload, idempotency_key, delay_after_commit)
 
     @app.get("/ledger", response_model=LedgerSummary)
-    def ledger() -> LedgerSummary:
-        return tool_store.summary()
+    def ledger(run_id: Optional[uuid.UUID] = None) -> LedgerSummary:
+        # Omit run_id for the cumulative service ledger; pass it when proving the
+        # side-effect count of one workflow independently of earlier demo runs.
+        return tool_store.summary(None if run_id is None else str(run_id))
 
     @app.get("/healthz")
     def health() -> dict[str, str]:

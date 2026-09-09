@@ -170,6 +170,9 @@ immutable snapshot of the submitted definition.
 | `GET` | `/workflow_runs/{run_id}/timeline` | Read history-derived retry and execution timing. |
 | `GET` | `/healthz` | Check API availability. |
 
+The independent mock service exposes `GET /ledger`; pass `run_id` to count only
+the side effects created by that workflow run, or omit it for cumulative totals.
+
 The following manual test exposes the recovery boundary instead of letting the
 stack supervisor restart the worker immediately. Run `uv sync` first, then start
 only the API and mock tool in Terminal 1 against a persistent scenario directory:
@@ -188,13 +191,13 @@ until curl -fsS http://127.0.0.1:8000/healthz >/dev/null && \
 
 In Terminal 2 (with `jq` installed), submit a run and start one worker whose
 charge response is delayed after the tool commits. Kill that worker at the
-ambiguous point, then verify that the durable run is still `running` and its
-charge is `intent_recorded`:
+ambiguous point, then print the still-running timeline and only this run's
+committed side effects:
 
 ```bash
 export CRASHSAFE_STATE_DIR=.crashsafe
 API_URL=http://127.0.0.1:8000
-BASELINE_CHARGES=$(curl -sS http://127.0.0.1:8001/ledger | jq -r '.charges')
+TOOL_URL=http://127.0.0.1:8001
 RUN_ID=$(curl -sS -X POST "$API_URL/workflow_runs" \
   -H 'content-type: application/json' \
   --data-binary @workflows/paid-onboarding.json | jq -r '.run_id')
@@ -208,14 +211,14 @@ WORKER_JOB=$!
 
 until [[ -s "$CRASHSAFE_STATE_DIR/worker.pid" ]]; do sleep 0.1; done
 WORKER_PID=$(<"$CRASHSAFE_STATE_DIR/worker.pid")
-until (( $(curl -sS http://127.0.0.1:8001/ledger | jq -r '.charges') > BASELINE_CHARGES )); do
+until (( $(curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq -r '.charges') == 1 )); do
   sleep 0.1
 done
 
 kill -9 "$WORKER_PID"
 wait "$WORKER_JOB" 2>/dev/null || true
-curl -sS "$API_URL/workflow_runs/$RUN_ID" |
-  jq -e 'select(.status == "running") | {run_id, status, steps: [.steps[] | {id, status}]}'
+curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
+curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq .
 ```
 
 Back in Terminal 1, stop the inspection-only API and tool, then restart the
@@ -229,17 +232,15 @@ CRASHSAFE_STATE_DIR=.crashsafe \
 CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-stack
 ```
 
-Finally, in Terminal 2, wait for the run to become terminal and inspect the
-completed projection, ordered history, timeline, and deduplicated ledger:
+Finally, in Terminal 2, wait for the run to become terminal, then print only its
+completed timeline and run-scoped ledger counts:
 
 ```bash
 until STATUS=$(curl -fsS "$API_URL/workflow_runs/$RUN_ID" | jq -r '.status') && \
       [[ "$STATUS" != "running" ]]; do sleep 0.2; done
 
-curl -sS "$API_URL/workflow_runs/$RUN_ID" | jq -e 'select(.status == "completed")'
-curl -sS "$API_URL/workflow_runs/$RUN_ID/events" | jq .
 curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
-curl -sS http://127.0.0.1:8001/ledger | jq .
+curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq .
 ```
 
 ## Demo
@@ -265,7 +266,7 @@ directed and that invocation adds exactly **one charge, two provisions, and
 three notifications**. The brief overlap between workers 1 and 2 also exercises
 leased concurrent execution without making concurrency a separate demo.
 
-[Watch the terminal demo](crashsafe-demo.mov).
+[Watch the terminal demo](crashsafe-demo.mp4).
 
 ## Focused manual check: graceful drain
 
