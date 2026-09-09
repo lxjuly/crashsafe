@@ -21,7 +21,9 @@ from crashsafe.observability import format_timeline
 from crashsafe.storage import SQLiteStorage
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = Path(os.getenv("CRASHSAFE_STATE_DIR", ROOT / ".crashsafe")).resolve()
+STATE = Path(
+    os.getenv("CRASHSAFE_STATE_DIR", ROOT / ".crashsafe" / "graceful-drain")
+).resolve()
 
 
 def wait_for(predicate: Callable[[], bool], label: str, timeout: float = 15.0) -> None:
