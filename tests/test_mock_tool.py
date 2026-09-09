@@ -55,3 +55,36 @@ def test_deterministic_429_injection(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert throttled.headers["Retry-After"] == "0.25"
     assert completed.status_code == 200
     assert client.get("/ledger").json()["charges"] == 1
+
+
+def test_deterministic_429_can_target_an_operation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CRASHSAFE_FAIL_FIRST_OPERATION", "provision")
+    monkeypatch.setenv("CRASHSAFE_FLAKY_RATE", "0")
+    client = TestClient(create_app(ToolStore(tmp_path / "tool.db")))
+
+    charge = client.post(
+        "/tools/charge",
+        json={"customer_id": "customer-1", "amount_cents": 2500},
+        headers={"Idempotency-Key": "charge"},
+    )
+    first_provision = client.post(
+        "/tools/provision",
+        json={"customer_id": "customer-1", "plan": "trial"},
+        headers={"Idempotency-Key": "provision"},
+    )
+    second_provision = client.post(
+        "/tools/provision",
+        json={"customer_id": "customer-1", "plan": "trial"},
+        headers={"Idempotency-Key": "provision"},
+    )
+
+    assert charge.status_code == 200
+    assert first_provision.status_code == 429
+    assert second_provision.status_code == 200
+    assert client.get("/ledger").json() == {
+        "charges": 1,
+        "provisions": 1,
+        "notifications": 0,
+    }

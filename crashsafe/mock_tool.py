@@ -172,6 +172,11 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
     flaky_rate = float(os.getenv("CRASHSAFE_FLAKY_RATE", str(DEFAULT_FLAKY_RATE)))
     retry_after = float(os.getenv("CRASHSAFE_RETRY_AFTER", str(DEFAULT_RETRY_AFTER_SECONDS)))
     forced_failures = int(os.getenv("CRASHSAFE_FAIL_FIRST_N", "0"))
+    forced_failure_operation_value = os.getenv("CRASHSAFE_FAIL_FIRST_OPERATION")
+    forced_failure_operation = (
+        None if forced_failure_operation_value is None else StepName(forced_failure_operation_value)
+    )
+    operation_failure_pending = forced_failure_operation is not None
     failure_lock = threading.Lock()
     rng = random.Random(os.getenv("CRASHSAFE_RANDOM_SEED"))
     request_types: dict[StepName, type[BaseModel]] = {
@@ -186,7 +191,7 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
         operation_key: str,
         delay_after_commit: Optional[str],
     ) -> ToolResult:
-        nonlocal forced_failures
+        nonlocal forced_failures, operation_failure_pending
         request = request_types[operation].model_validate(payload)
         try:
             committed = tool_store.find(operation, operation_key, request)
@@ -203,6 +208,9 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
             force_failure = forced_failures > 0
             if force_failure:
                 forced_failures -= 1
+            elif operation_failure_pending and operation == forced_failure_operation:
+                operation_failure_pending = False
+                force_failure = True
         if force_failure or rng.random() < flaky_rate:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

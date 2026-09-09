@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One deterministic review demo: two workflows, two workers, one ambiguous charge."""
+"""Core demo: concurrent 429 handling plus ambiguous-charge crash recovery."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 import httpx
 
-from crashsafe.models import WorkflowTimeline
+from crashsafe.models import WorkflowRunTimeline
 from crashsafe.observability import format_timeline
 from crashsafe.storage import SQLiteStorage
 
@@ -48,14 +48,33 @@ def healthy(url: str) -> bool:
         return False
 
 
-def load_example(name: str) -> dict[str, Any]:
-    return json.loads((ROOT / "examples" / name).read_text(encoding="utf-8"))
+def load_workflow_definition(name: str) -> dict[str, Any]:
+    return json.loads((ROOT / "workflows" / name).read_text(encoding="utf-8"))
 
 
-def workflow(workflow_id: str) -> dict[str, Any]:
-    response = httpx.get(f"{API_URL}/workflows/{workflow_id}")
+def workflow_run(run_id: str) -> dict[str, Any]:
+    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}")
     response.raise_for_status()
     return response.json()
+
+
+def workflow_events(run_id: str) -> list[dict[str, Any]]:
+    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}/events")
+    response.raise_for_status()
+    return response.json()
+
+
+def workflow_timeline(run_id: str) -> WorkflowRunTimeline:
+    response = httpx.get(f"{API_URL}/workflow_runs/{run_id}/timeline")
+    response.raise_for_status()
+    return WorkflowRunTimeline.model_validate(response.json())
+
+
+def print_timelines(label: str, run_ids: tuple[str, str]) -> None:
+    print(label)
+    for run_id in run_ids:
+        print(format_timeline(workflow_timeline(run_id)))
+        print()
 
 
 def main() -> None:
@@ -71,6 +90,8 @@ def main() -> None:
             "CRASHSAFE_TOOL_PORT": "8011",
             "CRASHSAFE_TOOL_URL": TOOL_URL,
             "CRASHSAFE_FLAKY_RATE": "0",
+            "CRASHSAFE_FAIL_FIRST_OPERATION": "provision",
+            "CRASHSAFE_RETRY_AFTER": "2",
             "CRASHSAFE_COMMIT_SIGNAL_FILE": str(charge_signal),
             "CRASHSAFE_COMMIT_DELAY": "30",
             "CRASHSAFE_REQUEST_TIMEOUT": "60",
@@ -81,7 +102,7 @@ def main() -> None:
     )
     children: list[subprocess.Popen[bytes]] = []
     try:
-        print("1. Start the API and an independently durable mock tool", flush=True)
+        print("1. Start the API and independently durable mock tool", flush=True)
         tool = subprocess.Popen(
             [sys.executable, "-m", "crashsafe.mock_tool"],
             env=environment,
@@ -99,23 +120,23 @@ def main() -> None:
         wait_for(lambda: healthy(f"{TOOL_URL}/healthz"), "tool")
 
         paid_response = httpx.post(
-            f"{API_URL}/workflows", json=load_example("paid-onboarding.json")
+            f"{API_URL}/workflow_runs", json=load_workflow_definition("paid-onboarding.json")
         )
         trial_response = httpx.post(
-            f"{API_URL}/workflows", json=load_example("trial-activation.json")
+            f"{API_URL}/workflow_runs", json=load_workflow_definition("trial-activation.json")
         )
         paid_response.raise_for_status()
         trial_response.raise_for_status()
         paid = paid_response.json()
         trial = trial_response.json()
-        paid_id, trial_id = str(paid["id"]), str(trial["id"])
+        paid_id, trial_id = str(paid["run_id"]), str(trial["run_id"])
         charge_key = str(paid["steps"][0]["operation_key"])
-        print(f"   paid workflow:  {paid_id}")
-        print(f"   trial workflow: {trial_id}")
+        print(f"   crash-recovery run: {paid_id}")
+        print(f"   Retry-After run:    {trial_id}")
         print(f"   stable charge key: {charge_key}\n")
         pace()
 
-        print("2. Start two workers; worker-1 owns the paid workflow", flush=True)
+        print("2. Worker-1 starts the charge and blocks after its durable commit", flush=True)
         first_env = environment.copy()
         first_env["CRASHSAFE_WORKER_ID"] = "worker-1"
         first_env["CRASHSAFE_DELAY_AFTER_TOOL_COMMIT"] = "charge"
@@ -128,45 +149,69 @@ def main() -> None:
         children.append(worker_1)
         wait_for(charge_signal.exists, "durable charge commit")
 
+        print("   worker-1 is still inside the charge call")
+        print("   start worker-2 on the independent trial run", flush=True)
         second_env = environment.copy()
         second_env["CRASHSAFE_WORKER_ID"] = "worker-2"
         worker_2 = subprocess.Popen(
-            [sys.executable, "-m", "crashsafe.worker"],
+            [sys.executable, "-m", "crashsafe.worker", "--once"],
             env=second_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
         children.append(worker_2)
         wait_for(
-            lambda: workflow(trial_id)["steps"][0]["status"] != "pending",
-            "worker-2 trial progress",
+            lambda: any(
+                event["event_type"] == "StepRetryScheduled" for event in workflow_events(trial_id)
+            ),
+            "persisted HTTP 429 retry",
         )
-        print("   worker-2 concurrently progresses the independent trial workflow\n")
+        if worker_2.wait(timeout=5) != 0:
+            raise RuntimeError("worker-2 did not finish its single 429 attempt")
+        retry_event = next(
+            event
+            for event in workflow_events(trial_id)
+            if event["event_type"] == "StepRetryScheduled"
+        )
+        print("   worker-2 received HTTP 429 while worker-1 remained in flight")
+        print(f"   persisted next_attempt_at: {retry_event['payload']['next_attempt_at']}\n")
         pace()
 
-        print("3. The tool committed charge; kill worker-1 before engine completion")
+        print("3. Kill worker-1 after the 429 but before charge completion is recorded")
         print(f"   ledger before kill: {httpx.get(f'{TOOL_URL}/ledger').json()}")
         print(f"   $ kill -9 {worker_1.pid}", flush=True)
         os.kill(worker_1.pid, signal.SIGKILL)
         if worker_1.wait(timeout=5) != -signal.SIGKILL:
             raise RuntimeError("worker-1 did not exit from SIGKILL")
-        interrupted = workflow(paid_id)
+        interrupted = workflow_run(paid_id)
         print(f"   engine charge state: {interrupted['steps'][0]['status']}\n")
         pace()
 
-        print("4. Worker-2 takes the expired lease and safely resumes", flush=True)
+        print_timelines("4. Both timelines immediately after SIGKILL", (paid_id, trial_id))
+        pace()
+
+        print("5. Restart one worker; durable state drives both runs to completion", flush=True)
+        resumed_env = environment.copy()
+        resumed_env["CRASHSAFE_WORKER_ID"] = "worker-resumed"
+        worker_resumed = subprocess.Popen(
+            [sys.executable, "-m", "crashsafe.worker"],
+            env=resumed_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+        children.append(worker_resumed)
         wait_for(
             lambda: (
-                workflow(paid_id)["status"] == "completed"
-                and workflow(trial_id)["status"] == "completed"
+                workflow_run(paid_id)["status"] == "completed"
+                and workflow_run(trial_id)["status"] == "completed"
             ),
-            "both workflows to complete",
+            "both runs to complete",
         )
-        worker_2.send_signal(signal.SIGTERM)
-        if worker_2.wait(timeout=5) != 0:
-            raise RuntimeError("worker-2 did not drain cleanly")
+        worker_resumed.send_signal(signal.SIGTERM)
+        if worker_resumed.wait(timeout=5) != 0:
+            raise RuntimeError("resumed worker did not stop cleanly")
 
-        events: list[dict[str, Any]] = httpx.get(f"{API_URL}/workflows/{paid_id}/events").json()
+        events = workflow_events(paid_id)
         attempts = [
             event
             for event in events
@@ -174,34 +219,40 @@ def main() -> None:
         ]
         keys = [event["payload"]["operation_key"] for event in attempts]
         fences = [event["payload"]["fence_token"] for event in attempts]
+        retry_timeline = workflow_timeline(trial_id)
+        retry_attempts = [
+            event
+            for event in workflow_events(trial_id)
+            if event["event_type"] == "StepAttemptStarted" and event["step_id"] == "provision-trial"
+        ]
         ledger = httpx.get(f"{TOOL_URL}/ledger").json()
         store = SQLiteStorage(STATE / "engine.db")
         consistent = all(store.projection_matches_history(item) for item in (paid_id, trial_id))
         print(f"   charge attempts: {[event['attempt'] for event in attempts]}")
         print(f"   fence tokens: {fences}")
         print(f"   same key reused: {keys == [charge_key, charge_key]}")
+        print(f"   429 retries: {retry_timeline.summary.retries}")
+        print(f"   honored Retry-After: {retry_timeline.summary.planned_wait_ms}ms")
         print(f"   history reconstructs projections: {consistent}")
         print(f"   final durable ledger: {ledger}\n")
         pace()
 
-        for workflow_id in (paid_id, trial_id):
-            timeline = WorkflowTimeline.model_validate(
-                httpx.get(f"{API_URL}/workflows/{workflow_id}/timeline").json()
-            )
-            print(format_timeline(timeline))
-            print()
-            pace()
+        print_timelines("6. Both timelines after recovery and completion", (paid_id, trial_id))
+        pace()
 
         expected_ledger = {"charges": 1, "provisions": 2, "notifications": 3}
         if (
             len(attempts) != 2
             or keys != [charge_key, charge_key]
             or fences != [1, 2]
+            or len(retry_attempts) != 2
+            or retry_timeline.summary.retries != 1
+            or retry_timeline.summary.planned_wait_ms < 1900
             or ledger != expected_ledger
             or not consistent
         ):
             raise RuntimeError("demo invariant failed")
-        print("PASS — two workflows complete; the ambiguous charge fired exactly once.")
+        print("PASS — crash recovery fired one charge; the other run honored Retry-After.")
     finally:
         for child in children:
             if child.poll() is None:

@@ -3,15 +3,13 @@
 # Proves SIGTERM drains an in-flight attempt: the worker remains alive long
 # enough to persist completion, exits, and the supervisor starts a replacement.
 #
-# Start a fresh stack first:
-#   rm -rf .crashsafe/manual-drain
-#   CRASHSAFE_STATE_DIR=.crashsafe/manual-drain \
+# Start the stack first; its SQLite state remains in .crashsafe/:
 #   CRASHSAFE_WORKERS=1 CRASHSAFE_FLAKY_RATE=0 \
 #   CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge CRASHSAFE_COMMIT_DELAY=5 \
 #   CRASHSAFE_REQUEST_TIMEOUT=10 uv run crashsafe-stack
 #
 # Then:
-#   CRASHSAFE_STATE_DIR=.crashsafe/manual-drain scripts/manual_graceful_drain.sh
+#   scripts/manual_graceful_drain.sh
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/manual_helpers.sh"
@@ -21,10 +19,10 @@ pid="$(worker_pid)"
 baseline_charges="$(curl -fsS "$TOOL_URL/ledger" | jq -r '.charges')"
 expected_charges=$((baseline_charges + 1))
 
-echo "Submitting paid onboarding workflow"
-created="$(submit_workflow "$ROOT_DIR/examples/paid-onboarding.json")"
+echo "Creating a paid onboarding workflow run"
+created="$(create_workflow_run "$ROOT_DIR/workflows/paid-onboarding.json")"
 jq . <<<"$created"
-workflow_id="$(jq -er '.id' <<<"$created")"
+run_id="$(jq -er '.run_id' <<<"$created")"
 
 echo
 echo "Waiting until the charge commits while the response remains in flight"
@@ -40,14 +38,14 @@ fi
 echo "Worker is still alive and draining the current attempt"
 
 wait_for_process_exit "$pid"
-echo "Original worker exited cleanly; waiting for workflow completion"
-wait_for_json "$API_URL/workflows/$workflow_id" '.status == "completed"' "workflow completion"
+echo "Original worker exited cleanly; waiting for run completion"
+wait_for_json "$API_URL/workflow_runs/$run_id" '.status == "completed"' "run completion"
 
-events="$(curl -fsS "$API_URL/workflows/$workflow_id/events")"
+events="$(curl -fsS "$API_URL/workflow_runs/$run_id/events")"
 charge_attempts="$(jq '[.[] | select(.event_type == "StepAttemptStarted" and .step_id == "charge")] | length' <<<"$events")"
 final_charges="$(curl -fsS "$TOOL_URL/ledger" | jq -r '.charges')"
 
-print_result "History-derived timeline" "$API_URL/workflows/$workflow_id/timeline"
+print_result "History-derived timeline" "$API_URL/workflow_runs/$run_id/timeline"
 print_result "Durable side-effect ledger" "$TOOL_URL/ledger"
 
 if ((charge_attempts != 1)) || ((final_charges != expected_charges)); then
@@ -56,4 +54,4 @@ if ((charge_attempts != 1)) || ((final_charges != expected_charges)); then
 fi
 
 echo
-echo "PASS: SIGTERM drained the in-flight attempt and the workflow completed exactly once."
+echo "PASS: SIGTERM drained the in-flight attempt and the run completed exactly once."

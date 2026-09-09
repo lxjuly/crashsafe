@@ -33,8 +33,8 @@ require_services() {
   }
 }
 
-submit_workflow() {
-  curl -fsS -X POST "$API_URL/workflows" \
+create_workflow_run() {
+  curl -fsS -X POST "$API_URL/workflow_runs" \
     -H 'content-type: application/json' \
     --data-binary "@$1"
 }
