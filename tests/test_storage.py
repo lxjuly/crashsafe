@@ -79,6 +79,7 @@ def test_v3_database_migrates_existing_execution_to_run_terminology(tmp_path: Pa
     original = original_store.create_workflow_run(paid_workflow_definition("migration"))
 
     connection = sqlite3.connect(path)
+    connection.execute("PRAGMA legacy_alter_table = OFF")
     connection.executescript(
         """
         PRAGMA foreign_keys = OFF;
@@ -113,6 +114,8 @@ def test_v3_database_migrates_existing_execution_to_run_terminology(tmp_path: Pa
     migrated = migrated_store.get_workflow_run(original.run_id)
     assert migrated == original
     assert migrated_store.projection_matches_history(original.run_id)
+    subsequent = migrated_store.create_workflow_run(paid_workflow_definition("after-migration"))
+    assert migrated_store.projection_matches_history(subsequent.run_id)
     assert (
         migrated_store.list_events(original.run_id)[0].event_type == EventType.WORKFLOW_RUN_CREATED
     )
@@ -122,10 +125,69 @@ def test_v3_database_migrates_existing_execution_to_run_terminology(tmp_path: Pa
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     version = connection.execute("PRAGMA user_version").fetchone()[0]
+    step_parent = connection.execute("PRAGMA foreign_key_list(steps)").fetchone()[2]
+    lease_parent = connection.execute("PRAGMA foreign_key_list(workflow_run_leases)").fetchone()[2]
+    foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
     connection.close()
     assert version == 4
+    assert step_parent == lease_parent == "workflow_runs"
+    assert foreign_key_errors == []
     assert {"workflow_runs", "workflow_run_events", "workflow_run_leases"} <= tables
     assert not {"workflows", "workflow_events", "workflow_leases"} & tables
+
+
+def test_v4_database_repairs_foreign_keys_left_by_legacy_sqlite_rename(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "engine.db"
+    store = SQLiteStorage(path)
+    original = store.create_workflow_run(paid_workflow_definition("legacy-rename"))
+
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("PRAGMA legacy_alter_table = OFF")
+    connection.executescript(
+        """
+        ALTER TABLE workflow_runs RENAME COLUMN run_id TO id;
+        ALTER TABLE workflow_runs RENAME TO workflows;
+        ALTER TABLE steps RENAME COLUMN run_id TO workflow_id;
+        ALTER TABLE step_dependencies RENAME COLUMN run_id TO workflow_id;
+        ALTER TABLE workflow_run_events RENAME COLUMN run_id TO workflow_id;
+        ALTER TABLE workflow_run_events RENAME TO workflow_events;
+        ALTER TABLE workflow_run_leases RENAME COLUMN run_id TO workflow_id;
+        ALTER TABLE workflow_run_leases RENAME TO workflow_leases;
+        """
+    )
+    connection.execute("PRAGMA legacy_alter_table = ON")
+    connection.executescript(
+        """
+        ALTER TABLE workflows RENAME TO workflow_runs;
+        ALTER TABLE workflow_runs RENAME COLUMN id TO run_id;
+        ALTER TABLE steps RENAME COLUMN workflow_id TO run_id;
+        ALTER TABLE step_dependencies RENAME COLUMN workflow_id TO run_id;
+        ALTER TABLE workflow_events RENAME TO workflow_run_events;
+        ALTER TABLE workflow_run_events RENAME COLUMN workflow_id TO run_id;
+        ALTER TABLE workflow_leases RENAME TO workflow_run_leases;
+        ALTER TABLE workflow_run_leases RENAME COLUMN workflow_id TO run_id;
+        PRAGMA user_version = 4;
+        """
+    )
+    broken_parent = connection.execute("PRAGMA foreign_key_list(steps)").fetchone()[2]
+    connection.close()
+    assert broken_parent == "workflows"
+
+    repaired_store = SQLiteStorage(path)
+    assert repaired_store.get_workflow_run(original.run_id) == original
+    subsequent = repaired_store.create_workflow_run(paid_workflow_definition("after-repair"))
+    assert repaired_store.projection_matches_history(subsequent.run_id)
+
+    connection = sqlite3.connect(path)
+    step_parent = connection.execute("PRAGMA foreign_key_list(steps)").fetchone()[2]
+    lease_parent = connection.execute("PRAGMA foreign_key_list(workflow_run_leases)").fetchone()[2]
+    foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+    connection.close()
+    assert step_parent == lease_parent == "workflow_runs"
+    assert foreign_key_errors == []
 
 
 def test_nonempty_pre_dag_database_requires_explicit_clean(tmp_path: Path) -> None:

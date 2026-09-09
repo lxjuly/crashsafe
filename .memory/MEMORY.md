@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-09T04:15:00Z
+Updated: 2026-09-09T08:15:00Z
 
 ## Claims
 
@@ -100,7 +100,17 @@ Updated: 2026-09-09T04:15:00Z
 - [settled] targeted-demo-failure: `CRASHSAFE_FAIL_FIRST_OPERATION` deterministically
   injects one pre-side-effect 429 for a selected operation so the core demo can
   order concurrent crash and retry evidence without timing luck.
-- [settled] current-verification: All 42 tests, Ruff, strict mypy, shell syntax,
+- [settled] legacy-rename-repair: v3-to-v4 migration forces modern SQLite table
+  rename semantics, and startup repairs already-migrated v4 databases whose step
+  and lease foreign keys still target the removed `workflows` table.
+- [settled] isolated-canonical-demo: The canonical demo allocates free loopback
+  ports, verifies its own API and tool child processes, and exposes captured
+  startup diagnostics so stale services cannot satisfy its health checks.
+- [settled] demo-run-bounded-ledger: The canonical demo queries the durable
+  ledger separately for its two new run IDs, aggregates those scoped counts,
+  and uses the result for both output and invariant checking; historical global
+  totals cannot affect or obscure the proof.
+- [settled] current-verification: All 43 tests, Ruff, strict mypy, shell syntax,
   and the combined canonical demo pass.
 - [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
 - [superseded] refreshed-submission-video: The existing root recording predates

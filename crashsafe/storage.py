@@ -129,6 +129,8 @@ class SQLiteStorage:
                     self._drop_empty_legacy_schema(connection)
                 else:
                     self._migrate_v3_to_v4(connection)
+            else:
+                self._repair_v4_foreign_keys(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -242,7 +244,11 @@ class SQLiteStorage:
     @staticmethod
     def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
         """Rename execution state without discarding existing durable runs."""
+        legacy_alter_table = int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
         connection.execute("PRAGMA foreign_keys = OFF")
+        # SQLite builds may default to legacy rename behavior, which leaves child
+        # foreign keys pointing at the old table name after an ALTER TABLE rename.
+        connection.execute("PRAGMA legacy_alter_table = OFF")
         try:
             connection.executescript(
                 """
@@ -277,6 +283,85 @@ class SQLiteStorage:
             connection.rollback()
             raise
         finally:
+            connection.execute(f"PRAGMA legacy_alter_table = {legacy_alter_table}")
+            connection.execute("PRAGMA foreign_keys = ON")
+
+    @staticmethod
+    def _repair_v4_foreign_keys(connection: sqlite3.Connection) -> None:
+        """Repair v4 databases created with SQLite legacy rename semantics."""
+        broken_steps = any(
+            str(row["table"]) == "workflows"
+            for row in connection.execute("PRAGMA foreign_key_list(steps)").fetchall()
+        )
+        broken_leases = any(
+            str(row["table"]) == "workflows"
+            for row in connection.execute("PRAGMA foreign_key_list(workflow_run_leases)").fetchall()
+        )
+        if not broken_steps and not broken_leases:
+            return
+
+        legacy_alter_table = int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
+        connection.execute("PRAGMA foreign_keys = OFF")
+        # Keep step_dependencies aimed at the replacement `steps` table while
+        # the broken parent tables are temporarily renamed out of the way.
+        connection.execute("PRAGMA legacy_alter_table = ON")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if broken_steps:
+                connection.execute("DROP INDEX IF EXISTS idx_steps_runnable")
+                connection.execute("ALTER TABLE steps RENAME TO steps_with_legacy_foreign_key")
+                connection.execute(
+                    """
+                    CREATE TABLE steps (
+                        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
+                        id TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        operation TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        request_json TEXT NOT NULL,
+                        operation_key TEXT NOT NULL UNIQUE,
+                        tool_key TEXT NOT NULL,
+                        output_json TEXT,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        next_attempt_at TEXT,
+                        last_error TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        PRIMARY KEY(run_id, id),
+                        UNIQUE(run_id, position)
+                    )
+                    """
+                )
+                connection.execute("INSERT INTO steps SELECT * FROM steps_with_legacy_foreign_key")
+                connection.execute("DROP TABLE steps_with_legacy_foreign_key")
+            if broken_leases:
+                connection.execute(
+                    """ALTER TABLE workflow_run_leases
+                    RENAME TO workflow_run_leases_with_legacy_foreign_key"""
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE workflow_run_leases (
+                        run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id),
+                        owner_id TEXT NOT NULL,
+                        fence_token INTEGER NOT NULL,
+                        lease_expires_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """INSERT INTO workflow_run_leases
+                    SELECT * FROM workflow_run_leases_with_legacy_foreign_key"""
+                )
+                connection.execute("DROP TABLE workflow_run_leases_with_legacy_foreign_key")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute(f"PRAGMA legacy_alter_table = {legacy_alter_table}")
             connection.execute("PRAGMA foreign_keys = ON")
 
     def create_workflow_run(
