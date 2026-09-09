@@ -25,7 +25,7 @@ DEFAULT_TOOL_KEY = "mock-tool"
 class Settings:
     state_dir: Path
     engine_db: Path
-    tool_db: Path
+    ledger_db: Path
     tool_base_url: str
     poll_interval_seconds: float
     request_timeout_seconds: float
@@ -40,6 +40,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         state_dir = Path(os.getenv("CRASHSAFE_STATE_DIR", ".crashsafe")).resolve()
+        ledger_path = os.getenv("CRASHSAFE_LEDGER_DB") or os.getenv("CRASHSAFE_TOOL_DB")
         tool_port = int(os.getenv("CRASHSAFE_TOOL_PORT", str(DEFAULT_TOOL_PORT)))
         worker_count = int(os.getenv("CRASHSAFE_WORKERS", str(DEFAULT_WORKER_COUNT)))
         lease_ttl = float(os.getenv("CRASHSAFE_LEASE_TTL", str(DEFAULT_LEASE_TTL_SECONDS)))
@@ -58,7 +59,7 @@ class Settings:
         return cls(
             state_dir=state_dir,
             engine_db=Path(os.getenv("CRASHSAFE_ENGINE_DB", state_dir / "engine.db")),
-            tool_db=Path(os.getenv("CRASHSAFE_TOOL_DB", state_dir / "tools.db")),
+            ledger_db=Path(ledger_path) if ledger_path else state_dir / "ledger.db",
             tool_base_url=os.getenv("CRASHSAFE_TOOL_URL", f"http://{DEFAULT_API_HOST}:{tool_port}"),
             poll_interval_seconds=float(
                 os.getenv("CRASHSAFE_POLL_INTERVAL", str(DEFAULT_POLL_INTERVAL_SECONDS))

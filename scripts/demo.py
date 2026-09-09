@@ -6,7 +6,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -21,7 +20,7 @@ from crashsafe.observability import format_timeline
 from crashsafe.storage import SQLiteStorage
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = ROOT / ".crashsafe" / "demo"
+STATE = Path(os.getenv("CRASHSAFE_STATE_DIR", ROOT / ".crashsafe")).resolve()
 API_URL = "http://127.0.0.1:8010"
 TOOL_URL = "http://127.0.0.1:8011"
 DEMO_PAUSE = float(os.getenv("CRASHSAFE_DEMO_PAUSE", "0"))
@@ -78,10 +77,19 @@ def print_timelines(label: str, run_ids: tuple[str, str]) -> None:
 
 
 def main() -> None:
-    if STATE.exists():
-        shutil.rmtree(STATE)
-    STATE.mkdir(parents=True)
+    STATE.mkdir(parents=True, exist_ok=True)
     charge_signal = STATE / "charge-committed.signal"
+    charge_signal.unlink(missing_ok=True)
+    unfinished = [
+        run.run_id
+        for run in SQLiteStorage(STATE / "engine.db").list_workflow_runs(limit=10_000)
+        if run.status.value == "running"
+    ]
+    if unfinished:
+        raise RuntimeError(
+            f"unfinished demo runs require recovery: {unfinished}; "
+            f"finish them or manually clear {STATE}"
+        )
     environment = os.environ.copy()
     environment.update(
         {
@@ -118,6 +126,7 @@ def main() -> None:
         children.extend([tool, api])
         wait_for(lambda: healthy(f"{API_URL}/healthz"), "API")
         wait_for(lambda: healthy(f"{TOOL_URL}/healthz"), "tool")
+        baseline_ledger = httpx.get(f"{TOOL_URL}/ledger").json()
 
         paid_response = httpx.post(
             f"{API_URL}/workflow_runs", json=load_workflow_definition("paid-onboarding.json")
@@ -226,6 +235,10 @@ def main() -> None:
             if event["event_type"] == "StepAttemptStarted" and event["step_id"] == "provision-trial"
         ]
         ledger = httpx.get(f"{TOOL_URL}/ledger").json()
+        ledger_delta = {
+            operation: int(ledger[operation]) - int(baseline_ledger[operation])
+            for operation in ("charges", "provisions", "notifications")
+        }
         store = SQLiteStorage(STATE / "engine.db")
         consistent = all(store.projection_matches_history(item) for item in (paid_id, trial_id))
         print(f"   charge attempts: {[event['attempt'] for event in attempts]}")
@@ -235,12 +248,13 @@ def main() -> None:
         print(f"   honored Retry-After: {retry_timeline.summary.planned_wait_ms}ms")
         print(f"   history reconstructs projections: {consistent}")
         print(f"   final durable ledger: {ledger}\n")
+        print(f"   side effects added by this demo: {ledger_delta}\n")
         pace()
 
         print_timelines("6. Both timelines after recovery and completion", (paid_id, trial_id))
         pace()
 
-        expected_ledger = {"charges": 1, "provisions": 2, "notifications": 3}
+        expected_delta = {"charges": 1, "provisions": 2, "notifications": 3}
         if (
             len(attempts) != 2
             or keys != [charge_key, charge_key]
@@ -248,7 +262,7 @@ def main() -> None:
             or len(retry_attempts) != 2
             or retry_timeline.summary.retries != 1
             or retry_timeline.summary.planned_wait_ms < 1900
-            or ledger != expected_ledger
+            or ledger_delta != expected_delta
             or not consistent
         ):
             raise RuntimeError("demo invariant failed")

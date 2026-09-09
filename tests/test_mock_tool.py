@@ -25,6 +25,24 @@ def test_side_effect_and_idempotency_result_are_durable(tmp_path: Path) -> None:
     assert reopened.summary().charges == 1
 
 
+def test_legacy_tools_database_is_renamed_without_losing_ledger(tmp_path: Path) -> None:
+    legacy_path = tmp_path / "tools.db"
+    request = ChargeRequest(customer_id="migration-customer", amount_cents=2500)
+    legacy = ToolStore(legacy_path)
+    original, created = legacy.apply(StepName.CHARGE, "migration-key", request)
+    assert created is True
+
+    ledger_path = tmp_path / "ledger.db"
+    migrated = ToolStore(ledger_path)
+    recovered, created = migrated.apply(StepName.CHARGE, "migration-key", request)
+
+    assert not legacy_path.exists()
+    assert ledger_path.exists()
+    assert created is False
+    assert recovered.reference_id == original.reference_id
+    assert migrated.summary().charges == 1
+
+
 def test_idempotency_key_rejects_a_different_payload(tmp_path: Path) -> None:
     store = ToolStore(tmp_path / "tool.db")
     store.apply(

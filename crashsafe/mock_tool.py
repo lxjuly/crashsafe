@@ -47,7 +47,21 @@ class ToolStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_filename()
         self._initialize()
+
+    def _migrate_legacy_filename(self) -> None:
+        # Preserve the old durable ledger (including active WAL sidecars) when the
+        # public filename changed from tools.db to ledger.db.
+        if self.path.name != "ledger.db" or self.path.exists():
+            return
+        legacy = self.path.with_name("tools.db")
+        if not legacy.exists():
+            return
+        for suffix in ("", "-wal", "-shm"):
+            source = Path(f"{legacy}{suffix}")
+            if source.exists():
+                source.replace(Path(f"{self.path}{suffix}"))
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10.0)
@@ -72,6 +86,7 @@ class ToolStore:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
+            # This WAL protects the tool's transaction independently of engine.db.
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             connection.executescript(
@@ -101,6 +116,8 @@ class ToolStore:
     ) -> tuple[ToolResult, bool]:
         canonical_request = json.dumps(request.model_dump(mode="json"), sort_keys=True)
         request_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
+        # Deduplication lookup, side effect, and cached response are one local
+        # transaction. There is no committed effect without a retrievable result.
         with self._transaction() as connection:
             existing = connection.execute(
                 "SELECT * FROM idempotency_results WHERE operation_key = ?", (operation_key,)
@@ -167,7 +184,7 @@ class ToolStore:
 
 def create_app(store: Optional[ToolStore] = None) -> FastAPI:
     settings = Settings.from_env()
-    tool_store = store or ToolStore(settings.tool_db)
+    tool_store = store or ToolStore(settings.ledger_db)
     app = FastAPI(title="Crashsafe flaky mock tool", version="0.1.0")
     flaky_rate = float(os.getenv("CRASHSAFE_FLAKY_RATE", str(DEFAULT_FLAKY_RATE)))
     retry_after = float(os.getenv("CRASHSAFE_RETRY_AFTER", str(DEFAULT_RETRY_AFTER_SECONDS)))
@@ -194,6 +211,8 @@ def create_app(store: Optional[ToolStore] = None) -> FastAPI:
         nonlocal forced_failures, operation_failure_pending
         request = request_types[operation].model_validate(payload)
         try:
+            # Check committed results before injecting flakiness. Once a key has
+            # succeeded, every retry deterministically returns that original result.
             committed = tool_store.find(operation, operation_key, request)
         except IdempotencyConflictError as exc:
             raise HTTPException(

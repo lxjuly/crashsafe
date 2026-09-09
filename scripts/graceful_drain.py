@@ -6,7 +6,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -22,7 +21,7 @@ from crashsafe.observability import format_timeline
 from crashsafe.storage import SQLiteStorage
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = ROOT / ".crashsafe" / "graceful-drain"
+STATE = Path(os.getenv("CRASHSAFE_STATE_DIR", ROOT / ".crashsafe")).resolve()
 
 
 def wait_for(predicate: Callable[[], bool], label: str, timeout: float = 15.0) -> None:
@@ -82,10 +81,19 @@ def workflow_timeline(api_url: str, run_id: str) -> WorkflowRunTimeline:
 
 
 def main() -> None:
-    if STATE.exists():
-        shutil.rmtree(STATE)
-    STATE.mkdir(parents=True)
+    STATE.mkdir(parents=True, exist_ok=True)
     commit_signal = STATE / "charge-committed.signal"
+    commit_signal.unlink(missing_ok=True)
+    unfinished = [
+        run.run_id
+        for run in SQLiteStorage(STATE / "engine.db").list_workflow_runs(limit=10_000)
+        if run.status.value == "running"
+    ]
+    if unfinished:
+        raise RuntimeError(
+            f"unfinished graceful-drain runs require recovery: {unfinished}; "
+            f"finish them or manually clear {STATE}"
+        )
     api_port = available_port()
     tool_port = available_port()
     while tool_port == api_port:
@@ -126,6 +134,7 @@ def main() -> None:
         wait_for_service(api, api_url, "API")
         print(f"   API:  {api_url}")
         print(f"   tool: {tool_url}")
+        baseline_ledger = httpx.get(f"{tool_url}/ledger").json()
 
         definition = json.loads(
             (ROOT / "workflows" / "paid-onboarding.json").read_text(encoding="utf-8")
@@ -179,6 +188,10 @@ def main() -> None:
         timeline = workflow_timeline(api_url, run_id)
         events = workflow_events(api_url, run_id)
         ledger = httpx.get(f"{tool_url}/ledger").json()
+        ledger_delta = {
+            operation: int(ledger[operation]) - int(baseline_ledger[operation])
+            for operation in ("charges", "provisions", "notifications")
+        }
         charge_attempts = [
             event
             for event in events
@@ -189,9 +202,10 @@ def main() -> None:
         print("\n6. Final timeline after restart")
         print(format_timeline(timeline))
         print(f"\n   durable ledger: {ledger}")
+        print(f"   side effects added by this check: {ledger_delta}")
 
-        expected_ledger = {"charges": 1, "provisions": 1, "notifications": 1}
-        if len(charge_attempts) != 1 or ledger != expected_ledger or not consistent:
+        expected_delta = {"charges": 1, "provisions": 1, "notifications": 1}
+        if len(charge_attempts) != 1 or ledger_delta != expected_delta or not consistent:
             raise RuntimeError("graceful-drain invariant failed")
         print("PASS — SIGTERM committed only the in-flight attempt; restart completed the run.")
     finally:
