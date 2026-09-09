@@ -218,9 +218,14 @@ committed side effects:
 export CRASHSAFE_STATE_DIR=.crashsafe
 API_URL=http://127.0.0.1:8000
 TOOL_URL=http://127.0.0.1:8001
-RUN_ID=$(curl -sS -X POST "$API_URL/workflow_runs" \
+RUN_ID=$(curl -fsS -X POST "${API_URL}/workflow_runs" \
   -H 'content-type: application/json' \
   --data-binary @workflows/paid-onboarding.json | jq -r '.run_id')
+[[ -n "$RUN_ID" && "$RUN_ID" != null ]] || {
+  echo "Workflow creation did not return a run ID."
+  return 1 2>/dev/null || exit 1
+}
+printf '%s\n' "$RUN_ID" >"$CRASHSAFE_STATE_DIR/manual-run-id"
 
 rm -f "$CRASHSAFE_STATE_DIR/worker.pid"
 CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge \
@@ -241,7 +246,7 @@ WORKER_PID=$(<"$CRASHSAFE_STATE_DIR/worker.pid")
 echo "Waiting for this run's charge to commit..."
 CHARGES=0
 for _ in {1..100}; do
-  CHARGES=$(curl -fsS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq -r '.charges')
+  CHARGES=$(curl -fsS "${TOOL_URL}/ledger?run_id=${RUN_ID}" | jq -r '.charges')
   (( CHARGES > 0 )) && break
   sleep 0.1
 done
@@ -252,8 +257,8 @@ done
 
 kill -9 "$WORKER_PID"
 wait "$WORKER_JOB" 2>/dev/null || true
-curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
-curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq .
+curl -fsS "${API_URL}/workflow_runs/${RUN_ID}/timeline" | jq .
+curl -fsS "${TOOL_URL}/ledger?run_id=${RUN_ID}" | jq .
 ```
 
 Back in Terminal 1, stop the inspection-only API and tool, then restart the
@@ -271,20 +276,28 @@ Finally, in Terminal 2, wait for the run to become terminal, then print only its
 completed timeline and run-scoped ledger counts:
 
 ```bash
+export CRASHSAFE_STATE_DIR=.crashsafe
+API_URL=http://127.0.0.1:8000
+TOOL_URL=http://127.0.0.1:8001
+RUN_ID=$(<"$CRASHSAFE_STATE_DIR/manual-run-id")
+: "${API_URL:?missing API_URL}"
+: "${TOOL_URL:?missing TOOL_URL}"
+: "${RUN_ID:?missing RUN_ID}"
+
 echo "Waiting for recovery to finish..."
 STATUS=running
 for _ in {1..100}; do
-  STATUS=$(curl -fsS "$API_URL/workflow_runs/$RUN_ID" | jq -r '.status')
+  STATUS=$(curl -fsS "${API_URL}/workflow_runs/${RUN_ID}" | jq -r '.status')
   [[ "$STATUS" != "running" ]] && break
   sleep 0.2
 done
 [[ "$STATUS" == completed ]] || {
-  curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
+  curl -sS "${API_URL}/workflow_runs/${RUN_ID}/timeline" | jq .
   echo "Run did not complete within 20 seconds; inspect the supervisor logs above."
 }
 
-curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
-curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq .
+curl -fsS "${API_URL}/workflow_runs/${RUN_ID}/timeline" | jq .
+curl -fsS "${TOOL_URL}/ledger?run_id=${RUN_ID}" | jq .
 ```
 
 ## Demo
