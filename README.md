@@ -185,11 +185,31 @@ CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-mock-tool >"$CRASHSAFE_STATE_DIR/tool.lo
 TOOL_PID=$!
 uv run crashsafe-api >"$CRASHSAFE_STATE_DIR/api.log" 2>&1 &
 API_PID=$!
-until curl -fsS http://127.0.0.1:8000/healthz >/dev/null && \
-      curl -fsS http://127.0.0.1:8001/healthz >/dev/null; do sleep 0.2; done
+sleep 1
+kill -0 "$API_PID" "$TOOL_PID" || {
+  cat "$CRASHSAFE_STATE_DIR/api.log" "$CRASHSAFE_STATE_DIR/tool.log"
+  echo "Startup failed; stop any process already using ports 8000 or 8001."
+}
+for _ in {1..50}; do
+  curl -fsS http://127.0.0.1:8000/healthz >/dev/null && \
+    curl -fsS http://127.0.0.1:8001/healthz >/dev/null && break
+  sleep 0.2
+done
+curl -fsS http://127.0.0.1:8000/healthz >/dev/null
+curl -fsS http://127.0.0.1:8001/healthz >/dev/null
 ```
 
-In Terminal 2 (with `jq` installed), submit a run and start one worker whose
+In Terminal 2 (with `jq` installed), first confirm there is no older unfinished
+run. Because workers intentionally resume the oldest eligible persisted work,
+recover or explicitly remove stale state before continuing; otherwise the worker
+may correctly execute that older run first.
+
+```bash
+curl -sS http://127.0.0.1:8000/workflow_runs |
+  jq -e '[.[] | select(.status == "running")] | select(length == 0)'
+```
+
+Then submit a run and start one worker whose
 charge response is delayed after the tool commits. Kill that worker at the
 ambiguous point, then print the still-running timeline and only this run's
 committed side effects:
@@ -209,11 +229,26 @@ CRASHSAFE_WORKER_PID_FILE="$CRASHSAFE_STATE_DIR/worker.pid" \
 uv run crashsafe-worker >"$CRASHSAFE_STATE_DIR/worker.log" 2>&1 &
 WORKER_JOB=$!
 
-until [[ -s "$CRASHSAFE_STATE_DIR/worker.pid" ]]; do sleep 0.1; done
-WORKER_PID=$(<"$CRASHSAFE_STATE_DIR/worker.pid")
-until (( $(curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq -r '.charges') == 1 )); do
+for _ in {1..50}; do
+  [[ -s "$CRASHSAFE_STATE_DIR/worker.pid" ]] && break
   sleep 0.1
 done
+[[ -s "$CRASHSAFE_STATE_DIR/worker.pid" ]] || {
+  cat "$CRASHSAFE_STATE_DIR/worker.log"
+  echo "Worker did not start."
+}
+WORKER_PID=$(<"$CRASHSAFE_STATE_DIR/worker.pid")
+echo "Waiting for this run's charge to commit..."
+CHARGES=0
+for _ in {1..100}; do
+  CHARGES=$(curl -fsS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq -r '.charges')
+  (( CHARGES > 0 )) && break
+  sleep 0.1
+done
+[[ "$CHARGES" == 1 ]] || {
+  cat "$CRASHSAFE_STATE_DIR/worker.log"
+  echo "Charge did not commit exactly once within 10 seconds."
+}
 
 kill -9 "$WORKER_PID"
 wait "$WORKER_JOB" 2>/dev/null || true
@@ -236,8 +271,17 @@ Finally, in Terminal 2, wait for the run to become terminal, then print only its
 completed timeline and run-scoped ledger counts:
 
 ```bash
-until STATUS=$(curl -fsS "$API_URL/workflow_runs/$RUN_ID" | jq -r '.status') && \
-      [[ "$STATUS" != "running" ]]; do sleep 0.2; done
+echo "Waiting for recovery to finish..."
+STATUS=running
+for _ in {1..100}; do
+  STATUS=$(curl -fsS "$API_URL/workflow_runs/$RUN_ID" | jq -r '.status')
+  [[ "$STATUS" != "running" ]] && break
+  sleep 0.2
+done
+[[ "$STATUS" == completed ]] || {
+  curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
+  echo "Run did not complete within 20 seconds; inspect the stack logs above."
+}
 
 curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
 curl -sS "$TOOL_URL/ledger?run_id=$RUN_ID" | jq .
