@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-09T03:45:00Z
+Updated: 2026-09-09T04:15:00Z
 
 ## Claims
 
@@ -61,11 +61,24 @@ Updated: 2026-09-09T03:45:00Z
 - [settled] drain-startup-robustness: The self-contained graceful-drain script
   allocates free loopback ports instead of assuming 8020/8021 are available and
   reports captured service startup output when a child exits early.
+- [settled] persistent-scenario-state: The stack, manual walkthrough, and both
+  one-command scenarios default to the same global `.crashsafe/engine.db` and
+  `.crashsafe/ledger.db`. Nothing clears them automatically; repeated runs append
+  history and assert ledger deltas, while stale unfinished runs require recovery
+  or explicit manual cleanup.
+- [settled] official-database-names: `engine.db` stores workflow event history
+  and engine projections, while `ledger.db` stores the mock service's idempotency
+  results and side effects. A legacy `tools.db` is migrated in place when
+  `ledger.db` does not yet exist.
+- [settled] reviewability-pass: The README architecture diagram shows the API,
+  worker engine, independent database domains, and idempotent tool boundary;
+  concise comments now explain every durability-critical transaction, recovery,
+  retry, lease, reducer, drain, and deduplication path.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints
   both partial timelines, starts one replacement, prints both completed
-  timelines, and verifies one charge plus ledger counts `1/2/3`.
+  timelines, and verifies the invocation's ledger delta is `1/2/3`.
 - [settled] run-terminology-migration: Database schema v4 uses `workflow_runs`,
   `workflow_run_events`, `workflow_run_leases`, and `run_id`; startup losslessly
   migrates nonempty v3 databases and maps the three workflow-level event names.
@@ -75,7 +88,7 @@ Updated: 2026-09-09T03:45:00Z
 - [settled] targeted-demo-failure: `CRASHSAFE_FAIL_FIRST_OPERATION` deterministically
   injects one pre-side-effect 429 for a selected operation so the core demo can
   order concurrent crash and retry evidence without timing luck.
-- [settled] current-verification: All 40 tests, Ruff, strict mypy, shell syntax,
+- [settled] current-verification: All 41 tests, Ruff, strict mypy, shell syntax,
   and the combined canonical demo pass.
 - [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
 - [superseded] refreshed-submission-video: The existing root recording predates

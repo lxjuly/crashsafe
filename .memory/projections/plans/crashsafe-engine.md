@@ -169,7 +169,7 @@ FastAPI workflow API ───────► Pydantic + graph validation
                               worker-1  worker-2
                                   │ at-least-once HTTP + stable key
                                   ▼
-                         flaky mock tool API ───────► tools.db
+                         flaky mock tool API ───────► ledger.db
                                                      side effect +
                                                      idempotency result
 ```
@@ -682,7 +682,7 @@ this order:
 3. **Non-functional requirements** — crash durability, stable idempotency,
    deterministic failure testing, type safety, and simple local startup.
 4. **Architecture** — FastAPI, single worker, `engine.db`, independent mock tool
-   and `tools.db`, with no shared transaction.
+   and `ledger.db`, with no shared transaction.
 5. **Core data model and event-history invariants** — append-only ordered events,
    atomic projections, reducer reconstruction, immutable operation keys, and
    the external exactly-once boundary.
@@ -697,7 +697,7 @@ The README demo must be directly followable:
 
 1. Run `make setup` and `make test`.
 2. Run `make demo` with deterministic random flakiness disabled.
-3. Show that the charge commits in `tools.db`, then that the worker is killed
+3. Show that the charge commits in `ledger.db`, then that the worker is killed
    before `StepCompleted` is committed in `engine.db`.
 4. Show the pre-recovery event history: attempt 1 has
    `StepAttemptStarted` but no matching `StepCompleted`.
