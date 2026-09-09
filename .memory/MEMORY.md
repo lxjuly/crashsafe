@@ -77,6 +77,9 @@ Updated: 2026-09-09T04:15:00Z
 - [settled] run-scoped-ledger-view: `GET /ledger?run_id={run_id}` filters
   side-effect counts by the engine's stable `{run_id}:{step_id}` keys, allowing
   exactly-once evidence without confusing it with cumulative persisted totals.
+- [settled] bounded-manual-waits: README manual polling has finite startup,
+  commit, and recovery deadlines with diagnostic logs; it also checks for older
+  running work before relying on the global database's oldest-first scheduler.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints
