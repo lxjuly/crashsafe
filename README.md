@@ -33,6 +33,44 @@ UI. One workflow lease intentionally serializes ready branches; workers still
 process different workflows concurrently. Temporal is discussed only as design
 context—it is not a dependency or experiment in this submission.
 
+## AI usage
+
+AI performed the implementation: it wrote the application and tests, enumerated
+crash windows, scaffolded the typed boundaries, built the event reducer and
+process harnesses, and drafted the documentation. The most important human work
+was steering. Left unguided, AI repeatedly made plausible local choices that
+pulled the project away from the right submission:
+
+- **Scope:** it initially treated project memory as a runtime CRUD feature and
+  later expanded into experiments that did not strengthen the take-home.
+- **Event history:** it needed direction on why the append-only history is
+  the durable source of truth, which facts belong in it, and where a projection
+  is sufficient instead of more infrastructure.
+- **Workflow definition:** it moved between a hard-coded sequence, a Python-like
+  dynamic model, and a general DAG before human review selected a small,
+  validated JSON definition that demonstrates two useful workflows without
+  making parsing the project.
+- **Demo:** it overbuilt multiple demos and a Temporal experiment before review
+  focused the submission on one terminal recording that visibly proves
+  ambiguous-outcome recovery and a deduplicated side effect.
+- **Build tooling:** it retained a conventional `pip`/Make-based workflow and
+  `Makefile` until human review chose `uv` for a faster, smaller setup.
+
+AI also introduced implementation defects: Python 3.10 union syntax despite
+Python 3.9 support, a connection-local SQLite durability pragma applied only at
+setup, and lease deletion that could reuse fencing tokens. These were caught by
+rereading the assignment, reviewing the data model and transaction boundaries,
+running strict typing and repeated tests, inspecting SQLite state, using
+deterministic barriers and clocks, exercising stale-owner cases, and sending real
+process signals.
+
+AI was extremely helpful: its raw implementation speed made the breadth of this
+project possible within the available time. Human supervision is what made that
+speed effective. It was needed to define the actual problem, reject attractive
+extra scope, choose the durability model and interface, and decide what evidence
+would make the guarantee credible. The result came from combining rapid AI
+execution with deliberate human product and architectural judgment.
+
 ## Key decisions
 
 ### Execution model
@@ -155,43 +193,85 @@ and lets worker 2 take over with a higher fence and the same key. It prints both
 history-derived timelines and passes only when both workflows complete and the
 ledger contains exactly **one charge, two provisions, and three notifications**.
 
-[Watch the terminal demo](crashsafe-demo.mov). Focused retry, drain, concurrency,
-and crash commands are in [TESTING.md](TESTING.md).
+[Watch the terminal demo](crashsafe-demo.mov).
 
-## AI usage
+## Focused manual checks
 
-AI performed the implementation: it wrote the application and tests, enumerated
-crash windows, scaffolded the typed boundaries, built the event reducer and
-process harnesses, and drafted the documentation. The most important human work
-was steering. Left unguided, AI repeatedly made plausible local choices that
-pulled the project away from the right submission:
+The following curl-based scripts exercise a running local stack and use `jq` to
+render the submitted workflow, event evidence, timeline, and durable ledger.
+Run `uv sync` once and install `jq` before using them. Each check uses a fresh
+state directory so its deterministic failure hook cannot be consumed by an
+earlier run.
 
-- **Scope:** it initially treated project memory as a runtime CRUD feature and
-  later expanded into experiments that did not strengthen the take-home.
-- **Event history:** it needed direction on why the append-only history is
-  the durable source of truth, which facts belong in it, and where a projection
-  is sufficient instead of more infrastructure.
-- **Workflow definition:** it moved between a hard-coded sequence, a Python-like
-  dynamic model, and a general DAG before human review selected a small,
-  validated JSON definition that demonstrates two useful workflows without
-  making parsing the project.
-- **Demo:** it overbuilt multiple demos and a Temporal experiment before review
-  focused the submission on one terminal recording that visibly proves
-  ambiguous-outcome recovery and a deduplicated side effect.
-- **Build tooling:** it retained a conventional `pip`/Make-based workflow and
-  `Makefile` until human review chose `uv` for a faster, smaller setup.
+### Crash-safe resume
 
-AI also introduced implementation defects: Python 3.10 union syntax despite
-Python 3.9 support, a connection-local SQLite durability pragma applied only at
-setup, and lease deletion that could reuse fencing tokens. These were caught by
-rereading the assignment, reviewing the data model and transaction boundaries,
-running strict typing and repeated tests, inspecting SQLite state, using
-deterministic barriers and clocks, exercising stale-owner cases, and sending real
-process signals.
+Terminal 1 starts one worker and delays the charge response after the mock tool
+has committed its side effect:
 
-AI was extremely helpful: its raw implementation speed made the breadth of this
-project possible within the available time. Human supervision is what made that
-speed effective. It was needed to define the actual problem, reject attractive
-extra scope, choose the durability model and interface, and decide what evidence
-would make the guarantee credible. The result came from combining rapid AI
-execution with deliberate human product and architectural judgment.
+```bash
+rm -rf .crashsafe/manual-crash
+CRASHSAFE_STATE_DIR=.crashsafe/manual-crash \
+CRASHSAFE_WORKERS=1 CRASHSAFE_FLAKY_RATE=0 \
+CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge CRASHSAFE_COMMIT_DELAY=10 \
+CRASHSAFE_REQUEST_TIMEOUT=20 uv run crashsafe-stack
+```
+
+Terminal 2 submits the workflow, waits for the durable charge, sends a real
+`kill -9` to the worker, and verifies recovery with two requests, one stable
+operation key, and exactly one new ledger entry:
+
+```bash
+CRASHSAFE_STATE_DIR=.crashsafe/manual-crash scripts/manual_crash_resume.sh
+```
+
+### Safe retry and adaptive backoff
+
+Terminal 1 forces the first tool request to return HTTP 429 with a two-second
+`Retry-After`:
+
+```bash
+rm -rf .crashsafe/manual-retry
+CRASHSAFE_STATE_DIR=.crashsafe/manual-retry \
+CRASHSAFE_FLAKY_RATE=0 CRASHSAFE_FAIL_FIRST_N=1 \
+CRASHSAFE_RETRY_AFTER=2 uv run crashsafe-stack
+```
+
+Terminal 2 verifies that the retry deadline appears in event history, the
+timeline reports the planned wait, and the workflow completes without a
+duplicate charge:
+
+```bash
+CRASHSAFE_STATE_DIR=.crashsafe/manual-retry scripts/manual_safe_retries.sh
+```
+
+### Graceful drain
+
+Terminal 1 delays the committed charge response long enough to signal the
+worker while an attempt is in flight:
+
+```bash
+rm -rf .crashsafe/manual-drain
+CRASHSAFE_STATE_DIR=.crashsafe/manual-drain \
+CRASHSAFE_WORKERS=1 CRASHSAFE_FLAKY_RATE=0 \
+CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge CRASHSAFE_COMMIT_DELAY=5 \
+CRASHSAFE_REQUEST_TIMEOUT=10 uv run crashsafe-stack
+```
+
+Terminal 2 sends `SIGTERM`, verifies that the worker stays alive to commit the
+in-flight attempt, and confirms it exits cleanly with one charge attempt and one
+side effect:
+
+```bash
+CRASHSAFE_STATE_DIR=.crashsafe/manual-drain scripts/manual_graceful_drain.sh
+```
+
+Each script exits nonzero if its focused invariant is not observed. Stop the
+stack with Ctrl-C before starting another scenario.
+
+For complete automated verification:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run mypy crashsafe
+```

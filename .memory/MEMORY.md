@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-08T22:05:00Z
+Updated: 2026-09-09T01:45:00Z
 
 ## Claims
 
@@ -20,7 +20,7 @@ Updated: 2026-09-08T22:05:00Z
 - [settled] temporal-comparison-verified: An isolated persistent Temporal server with one worker reproduces the ambiguous charge outcome; Activity attempt 2 reuses the application key, returns the cached tool result, and completes with exactly one charge.
 - [settled] temporal-history-difference: In the observed run, Temporal represented the lost first execution through Activity attempt 2 with the prior Start-To-Close timeout, while Crashsafe retains two explicit `StepAttemptStarted` events.
 - [superseded] original-submission-video: The earlier 7.9-second fixed-workflow recording was replaced after the JSON DAG and consolidated-demo revision.
-- [settled] feature-test-manual: `TESTING.md` provides concise, reproducible checks for crash recovery, safe retries, and graceful drain.
+- [settled] feature-test-manual: The README documents executable, curl-based scripts for crash recovery, safe retries, and graceful drain; each prints API evidence with `jq` and asserts its focused invariant.
 - [settled] handoff-ready-memory: Project memory lives under `.memory/`; the current projection and dated journal identify the verified implementation and completed Git handoff.
 - [settled] evaluator-focused-readme: The README now follows the requested review structure: built/cut scope, key decisions and uncertainties, five precise failure modes, and concrete AI usage mistakes and verification.
 - [settled] extension-scope-complete: Concurrent workers, observability, and adaptive backoff are implemented and verified without changing the core durability boundary.
@@ -32,11 +32,11 @@ Updated: 2026-09-08T22:05:00Z
 - [accepted] json-dag-plan: Phases 14–15 replace hardcoded seeding with a complete materialized JSON DAG submitted directly to `POST /workflows`, validated by Pydantic and graph checks, persisted in `WorkflowCreated`, and demonstrated with two different payloads.
 - [settled] dag-scope-boundary: The accepted DAG contains allowlisted operations, concrete request bodies, explicit dependencies, and deterministic array order; it excludes registries, templates, separate inputs, output references, expressions, Python workflow code, definition CRUD, conditions, loops, dynamic fan-out, and intra-workflow parallel execution.
 - [accepted] audit-feature-cut: Remove the public audit model, endpoint, timeline flag, demo output, and feature language while preserving the reducer, atomic event/projection commits, internal reconstruction, and equality assertions in failure tests.
-- [accepted] phase-15-repository-cleanup: Remove `experiments/`, consolidate the two current demo scripts into one `scripts/demo.py` invoked through uv, retain broader feature evidence in tests and `TESTING.md`, and keep only the current root video.
+- [accepted] phase-15-repository-cleanup: Remove `experiments/`, consolidate the two original demo scripts into one `scripts/demo.py` invoked through uv, retain broader feature evidence in tests and README-linked manual checks, and keep only the current root video.
 - [accepted] uv-only-build: Phase 15 removes the Makefile, commits `uv.lock`, uses a standard `dev` dependency group, and documents only `uv sync` and `uv run ...` commands.
 - [settled] json-dag-implemented: `POST /workflows` now accepts a fully materialized, validated JSON DAG; `WorkflowCreated` v3 durably snapshots the concrete graph, and dependency projections drive deterministic readiness.
 - [settled] public-audit-removed: The audit model and endpoint are removed while `projection_matches_history`, reducer tests, and projection rebuild retain the underlying correctness check internally.
-- [settled] repository-surface-cleaned: The Temporal experiment, Makefile, two old demo scripts, and alternate demo targets are removed; the tracked surface has one `scripts/demo.py`, two example JSON definitions, and `uv.lock`.
+- [settled] repository-surface-cleaned: The Temporal experiment, Makefile, two old demo harnesses, and alternate demo targets are removed; the tracked surface has one canonical `scripts/demo.py`, three focused shell checks, two example JSON definitions, and `uv.lock`.
 - [settled] consolidated-demo-verified: The uv-run demo submits two workflows, starts two workers, kills the paid owner after charge commit, resumes at fence 2 with the same key, and finishes with one charge, two provisions, and three notifications.
 - [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
 - [settled] refreshed-submission-video: The root `crashsafe-demo.mov` is a 1920×1080 H.264 plain-Terminal recording of the uv demo. Frames at 1, 6, 12, 18, and 23 seconds were inspected and show the live kill, unknown engine outcome, fenced recovery, exact ledger, timelines, and PASS line.
