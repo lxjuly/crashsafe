@@ -8,71 +8,71 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 
 from crashsafe.config import DEFAULT_API_HOST, DEFAULT_API_PORT, Settings
 from crashsafe.models import (
-    WorkflowCreate,
-    WorkflowEventRecord,
-    WorkflowRecord,
-    WorkflowTimeline,
+    WorkflowDefinition,
+    WorkflowRun,
+    WorkflowRunEvent,
+    WorkflowRunTimeline,
 )
 from crashsafe.observability import build_timeline
-from crashsafe.storage import SQLiteStorage, WorkflowNotFoundError
+from crashsafe.storage import SQLiteStorage, WorkflowRunNotFoundError
 
 
 def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
     settings = Settings.from_env()
     database = storage or SQLiteStorage(settings.engine_db, settings.tool_key)
-    app = FastAPI(title="Crashsafe workflow API", version="0.1.0")
+    app = FastAPI(title="Crashsafe workflow run API", version="0.1.0")
 
     def get_storage() -> SQLiteStorage:
         return database
 
-    @app.post("/workflows", response_model=WorkflowRecord, status_code=status.HTTP_201_CREATED)
-    def create_workflow(
-        request: WorkflowCreate,
+    @app.post("/workflow_runs", response_model=WorkflowRun, status_code=status.HTTP_201_CREATED)
+    def create_workflow_run(
+        request: WorkflowDefinition,
         store: SQLiteStorage = Depends(get_storage),
-    ) -> WorkflowRecord:
-        return store.create_workflow(request)
+    ) -> WorkflowRun:
+        return store.create_workflow_run(request)
 
-    @app.get("/workflows/{workflow_id}", response_model=WorkflowRecord)
-    def get_workflow(
-        workflow_id: str,
+    @app.get("/workflow_runs/{run_id}", response_model=WorkflowRun)
+    def get_workflow_run(
+        run_id: str,
         store: SQLiteStorage = Depends(get_storage),
-    ) -> WorkflowRecord:
+    ) -> WorkflowRun:
         try:
-            return store.get_workflow(workflow_id)
-        except WorkflowNotFoundError as exc:
+            return store.get_workflow_run(run_id)
+        except WorkflowRunNotFoundError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="workflow run not found"
             ) from exc
 
-    @app.get("/workflows", response_model=list[WorkflowRecord])
-    def list_workflows(
+    @app.get("/workflow_runs", response_model=list[WorkflowRun])
+    def list_workflow_runs(
         limit: int = Query(default=100, ge=1, le=500),
         store: SQLiteStorage = Depends(get_storage),
-    ) -> list[WorkflowRecord]:
-        return store.list_workflows(limit)
+    ) -> list[WorkflowRun]:
+        return store.list_workflow_runs(limit)
 
-    @app.get("/workflows/{workflow_id}/events", response_model=list[WorkflowEventRecord])
-    def list_workflow_events(
-        workflow_id: str,
+    @app.get("/workflow_runs/{run_id}/events", response_model=list[WorkflowRunEvent])
+    def list_workflow_run_events(
+        run_id: str,
         store: SQLiteStorage = Depends(get_storage),
-    ) -> list[WorkflowEventRecord]:
+    ) -> list[WorkflowRunEvent]:
         try:
-            return store.list_events(workflow_id)
-        except WorkflowNotFoundError as exc:
+            return store.list_events(run_id)
+        except WorkflowRunNotFoundError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="workflow run not found"
             ) from exc
 
-    @app.get("/workflows/{workflow_id}/timeline", response_model=WorkflowTimeline)
-    def workflow_timeline(
-        workflow_id: str,
+    @app.get("/workflow_runs/{run_id}/timeline", response_model=WorkflowRunTimeline)
+    def workflow_run_timeline(
+        run_id: str,
         store: SQLiteStorage = Depends(get_storage),
-    ) -> WorkflowTimeline:
+    ) -> WorkflowRunTimeline:
         try:
-            return build_timeline(store.list_events(workflow_id))
-        except WorkflowNotFoundError as exc:
+            return build_timeline(store.list_events(run_id))
+        except WorkflowRunNotFoundError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="workflow not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="workflow run not found"
             ) from exc
 
     @app.get("/healthz")

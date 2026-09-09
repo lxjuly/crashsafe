@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from crashsafe.models import WorkflowCreate
+from crashsafe.models import WorkflowDefinition
 
 
-def paid_workflow(customer: str = "customer-1") -> WorkflowCreate:
-    return WorkflowCreate.model_validate(
+def paid_workflow_definition(customer: str = "customer-1") -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
         {
             "name": f"paid-{customer}",
             "steps": [
@@ -35,8 +35,8 @@ def paid_workflow(customer: str = "customer-1") -> WorkflowCreate:
     )
 
 
-def branched_workflow(customer: str = "branch") -> WorkflowCreate:
-    value = paid_workflow(customer).model_dump(mode="json")
+def branched_workflow_definition(customer: str = "branch") -> WorkflowDefinition:
+    value = paid_workflow_definition(customer).model_dump(mode="json")
     value["name"] = "branched"
     value["steps"][2]["depends_on"] = ["charge"]
-    return WorkflowCreate.model_validate(value)
+    return WorkflowDefinition.model_validate(value)

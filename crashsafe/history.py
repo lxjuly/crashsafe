@@ -13,32 +13,32 @@ from crashsafe.models import (
     StepRecord,
     StepRetryScheduledPayload,
     StepStatus,
-    WorkflowCompletedPayload,
-    WorkflowCreatedPayload,
-    WorkflowEventRecord,
-    WorkflowFailedPayload,
-    WorkflowRecord,
-    WorkflowStatus,
+    WorkflowRun,
+    WorkflowRunCompletedPayload,
+    WorkflowRunCreatedPayload,
+    WorkflowRunEvent,
+    WorkflowRunFailedPayload,
+    WorkflowRunStatus,
 )
 
 EVENT_SCHEMA_VERSION = 1
 ATTEMPT_EVENT_SCHEMA_VERSION = 2
-WORKFLOW_CREATED_SCHEMA_VERSION = 3
+WORKFLOW_RUN_CREATED_SCHEMA_VERSION = 3
 SUPPORTED_EVENT_SCHEMA_VERSIONS = {
     EVENT_SCHEMA_VERSION,
     ATTEMPT_EVENT_SCHEMA_VERSION,
-    WORKFLOW_CREATED_SCHEMA_VERSION,
+    WORKFLOW_RUN_CREATED_SCHEMA_VERSION,
 }
 PayloadT = TypeVar("PayloadT", bound=EventPayload)
 
 PAYLOAD_MODELS: dict[EventType, type[EventPayload]] = {
-    EventType.WORKFLOW_CREATED: WorkflowCreatedPayload,
+    EventType.WORKFLOW_RUN_CREATED: WorkflowRunCreatedPayload,
     EventType.STEP_ATTEMPT_STARTED: StepAttemptStartedPayload,
     EventType.STEP_RETRY_SCHEDULED: StepRetryScheduledPayload,
     EventType.STEP_COMPLETED: StepCompletedPayload,
     EventType.STEP_FAILED: StepFailedPayload,
-    EventType.WORKFLOW_COMPLETED: WorkflowCompletedPayload,
-    EventType.WORKFLOW_FAILED: WorkflowFailedPayload,
+    EventType.WORKFLOW_RUN_COMPLETED: WorkflowRunCompletedPayload,
+    EventType.WORKFLOW_RUN_FAILED: WorkflowRunFailedPayload,
 }
 
 
@@ -57,17 +57,17 @@ def canonical_payload(event_type: EventType, payload: EventPayload) -> dict[str,
     return payload.model_dump(mode="json")
 
 
-def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRecord:
+def reduce_workflow_run_history(events: Sequence[WorkflowRunEvent]) -> WorkflowRun:
     if not events:
-        raise HistoryIntegrityError("workflow history is empty")
+        raise HistoryIntegrityError("workflow run history is empty")
 
-    workflow_id = events[0].workflow_id
-    workflow: WorkflowRecord | None = None
+    run_id = events[0].run_id
+    run: WorkflowRun | None = None
     expected_sequence = 1
 
     for event in events:
-        if event.workflow_id != workflow_id:
-            raise HistoryIntegrityError("history contains multiple workflow IDs")
+        if event.run_id != run_id:
+            raise HistoryIntegrityError("history contains multiple run IDs")
         if event.sequence != expected_sequence:
             raise HistoryIntegrityError(
                 f"expected event sequence {expected_sequence}, got {event.sequence}"
@@ -83,23 +83,25 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
                 f"invalid {event.event_type.value} payload at sequence {event.sequence}"
             ) from exc
 
-        if event.event_type == EventType.WORKFLOW_CREATED:
-            if workflow is not None or event.sequence != 1:
-                raise HistoryIntegrityError("WorkflowCreated must be the first and only creation")
-            if event.schema_version != WORKFLOW_CREATED_SCHEMA_VERSION:
-                raise HistoryIntegrityError("materialized workflows require WorkflowCreated v3")
+        if event.event_type == EventType.WORKFLOW_RUN_CREATED:
+            if run is not None or event.sequence != 1:
+                raise HistoryIntegrityError(
+                    "WorkflowRunCreated must be the first and only creation"
+                )
+            if event.schema_version != WORKFLOW_RUN_CREATED_SCHEMA_VERSION:
+                raise HistoryIntegrityError("materialized runs require WorkflowRunCreated v3")
             if event.step_id is not None or event.attempt is not None:
-                raise HistoryIntegrityError("WorkflowCreated cannot identify a step or attempt")
-            created = _require_payload(payload, WorkflowCreatedPayload)
-            _validate_definitions(workflow_id, created.steps)
-            workflow = WorkflowRecord(
-                id=workflow_id,
+                raise HistoryIntegrityError("WorkflowRunCreated cannot identify a step or attempt")
+            created = _require_payload(payload, WorkflowRunCreatedPayload)
+            _validate_definitions(run_id, created.steps)
+            run = WorkflowRun(
+                run_id=run_id,
                 name=created.name,
-                status=WorkflowStatus.RUNNING,
+                status=WorkflowRunStatus.RUNNING,
                 steps=[
                     StepRecord(
                         id=definition.id,
-                        workflow_id=workflow_id,
+                        run_id=run_id,
                         position=definition.position,
                         operation=definition.operation,
                         depends_on=definition.depends_on,
@@ -118,41 +120,45 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
             )
             continue
 
-        if workflow is None:
-            raise HistoryIntegrityError("history does not begin with WorkflowCreated")
-        if workflow.status != WorkflowStatus.RUNNING:
-            raise HistoryIntegrityError("events cannot follow a terminal workflow event")
+        if run is None:
+            raise HistoryIntegrityError("history does not begin with WorkflowRunCreated")
+        if run.status != WorkflowRunStatus.RUNNING:
+            raise HistoryIntegrityError("events cannot follow a terminal run event")
 
-        if event.event_type == EventType.WORKFLOW_COMPLETED:
-            _require_payload(payload, WorkflowCompletedPayload)
+        if event.event_type == EventType.WORKFLOW_RUN_COMPLETED:
+            _require_payload(payload, WorkflowRunCompletedPayload)
             if event.step_id is not None or event.attempt is not None:
-                raise HistoryIntegrityError("WorkflowCompleted cannot identify a step or attempt")
-            if any(step.status != StepStatus.COMPLETED for step in workflow.steps):
-                raise HistoryIntegrityError("WorkflowCompleted requires every step to be completed")
-            workflow = workflow.model_copy(
+                raise HistoryIntegrityError(
+                    "WorkflowRunCompleted cannot identify a step or attempt"
+                )
+            if any(step.status != StepStatus.COMPLETED for step in run.steps):
+                raise HistoryIntegrityError(
+                    "WorkflowRunCompleted requires every step to be completed"
+                )
+            run = run.model_copy(
                 update={
-                    "status": WorkflowStatus.COMPLETED,
+                    "status": WorkflowRunStatus.COMPLETED,
                     "updated_at": event.occurred_at,
                     "completed_at": event.occurred_at,
                 }
             )
             continue
 
-        if event.event_type == EventType.WORKFLOW_FAILED:
-            failed = _require_payload(payload, WorkflowFailedPayload)
+        if event.event_type == EventType.WORKFLOW_RUN_FAILED:
+            failed = _require_payload(payload, WorkflowRunFailedPayload)
             if event.step_id != failed.step_id or event.attempt is not None:
-                raise HistoryIntegrityError("WorkflowFailed metadata does not match its payload")
-            step = _find_step(workflow, failed.step_id)
+                raise HistoryIntegrityError("WorkflowRunFailed metadata does not match its payload")
+            step = _find_step(run, failed.step_id)
             if step.status != StepStatus.FAILED or step.last_error != failed.error:
-                raise HistoryIntegrityError("WorkflowFailed requires its step to be failed")
-            workflow = workflow.model_copy(
-                update={"status": WorkflowStatus.FAILED, "updated_at": event.occurred_at}
+                raise HistoryIntegrityError("WorkflowRunFailed requires its step to be failed")
+            run = run.model_copy(
+                update={"status": WorkflowRunStatus.FAILED, "updated_at": event.occurred_at}
             )
             continue
 
         if event.step_id is None or event.attempt is None:
             raise HistoryIntegrityError(f"{event.event_type.value} requires step and attempt")
-        step_index, step = _find_step_with_index(workflow, event.step_id)
+        step_index, step = _find_step_with_index(run, event.step_id)
 
         if event.event_type == EventType.STEP_ATTEMPT_STARTED:
             started = _require_payload(payload, StepAttemptStartedPayload)
@@ -169,9 +175,7 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
             if event.attempt != step.attempts + 1:
                 raise HistoryIntegrityError("attempt numbers must increase by exactly one")
             completed = {
-                candidate.id
-                for candidate in workflow.steps
-                if candidate.status == StepStatus.COMPLETED
+                candidate.id for candidate in run.steps if candidate.status == StepStatus.COMPLETED
             }
             if not set(step.depends_on).issubset(completed):
                 raise HistoryIntegrityError("attempt started before its dependencies completed")
@@ -228,25 +232,25 @@ def reduce_workflow_history(events: Sequence[WorkflowEventRecord]) -> WorkflowRe
         else:
             raise HistoryIntegrityError(f"unsupported event type {event.event_type.value}")
 
-        steps = list(workflow.steps)
+        steps = list(run.steps)
         steps[step_index] = step
-        workflow = workflow.model_copy(update={"steps": steps})
+        run = run.model_copy(update={"steps": steps})
 
-    assert workflow is not None
-    if workflow.status == WorkflowStatus.RUNNING and any(
-        step.status == StepStatus.FAILED for step in workflow.steps
+    assert run is not None
+    if run.status == WorkflowRunStatus.RUNNING and any(
+        step.status == StepStatus.FAILED for step in run.steps
     ):
-        raise HistoryIntegrityError("failed step is missing WorkflowFailed")
-    if workflow.status == WorkflowStatus.RUNNING and all(
-        step.status == StepStatus.COMPLETED for step in workflow.steps
+        raise HistoryIntegrityError("failed step is missing WorkflowRunFailed")
+    if run.status == WorkflowRunStatus.RUNNING and all(
+        step.status == StepStatus.COMPLETED for step in run.steps
     ):
-        raise HistoryIntegrityError("completed steps are missing WorkflowCompleted")
-    return workflow
+        raise HistoryIntegrityError("completed steps are missing WorkflowRunCompleted")
+    return run
 
 
-def _validate_definitions(workflow_id: str, definitions: Sequence[StepDefinition]) -> None:
+def _validate_definitions(run_id: str, definitions: Sequence[StepDefinition]) -> None:
     if not definitions:
-        raise HistoryIntegrityError("workflow must contain at least one step")
+        raise HistoryIntegrityError("workflow definition must contain at least one step")
     positions = [definition.position for definition in definitions]
     if positions != list(range(len(definitions))):
         raise HistoryIntegrityError("step definitions must be ordered and contiguous")
@@ -255,8 +259,8 @@ def _validate_definitions(workflow_id: str, definitions: Sequence[StepDefinition
         raise HistoryIntegrityError("step IDs must be unique")
     known = set(ids)
     for definition in definitions:
-        if definition.operation_key != f"{workflow_id}:{definition.id}":
-            raise HistoryIntegrityError("operation key does not match workflow and step IDs")
+        if definition.operation_key != f"{run_id}:{definition.id}":
+            raise HistoryIntegrityError("operation key does not match run and step IDs")
         if len(set(definition.depends_on)) != len(definition.depends_on):
             raise HistoryIntegrityError("dependencies must be unique")
         if definition.id in definition.depends_on or not set(definition.depends_on) <= known:
@@ -272,15 +276,15 @@ def _validate_definitions(workflow_id: str, definitions: Sequence[StepDefinition
         visited.add(ready[0])
 
 
-def _find_step_with_index(workflow: WorkflowRecord, step_id: str) -> tuple[int, StepRecord]:
-    for index, step in enumerate(workflow.steps):
+def _find_step_with_index(run: WorkflowRun, step_id: str) -> tuple[int, StepRecord]:
+    for index, step in enumerate(run.steps):
         if step.id == step_id:
             return index, step
     raise HistoryIntegrityError(f"event refers to unknown step {step_id}")
 
 
-def _find_step(workflow: WorkflowRecord, step_id: str) -> StepRecord:
-    return _find_step_with_index(workflow, step_id)[1]
+def _find_step(run: WorkflowRun, step_id: str) -> StepRecord:
+    return _find_step_with_index(run, step_id)[1]
 
 
 def _require_current_attempt(step: StepRecord, attempt: int, expected_status: StepStatus) -> None:

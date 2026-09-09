@@ -2,35 +2,42 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from workflow_fixtures import paid_workflow
+from workflow_fixtures import paid_workflow_definition
 
 from crashsafe.api import create_app
 from crashsafe.storage import SQLiteStorage
 
 
-def test_workflow_history_and_timeline_endpoints(settings: object) -> None:
+def test_workflow_run_collection_history_and_timeline_endpoints(settings: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
     client = TestClient(create_app(store))
-    created = client.post("/workflows", json=paid_workflow("api-test").model_dump(mode="json"))
+    created = client.post(
+        "/workflow_runs", json=paid_workflow_definition("api-test").model_dump(mode="json")
+    )
     assert created.status_code == 201
-    workflow = created.json()
-    workflow_id = workflow["id"]
-    assert workflow["name"] == "paid-api-test"
-    assert workflow["steps"][1]["depends_on"] == ["charge"]
-    assert workflow["steps"][0]["operation_key"] == f"{workflow_id}:charge"
+    run = created.json()
+    run_id = run["run_id"]
+    assert run["name"] == "paid-api-test"
+    assert run["steps"][1]["depends_on"] == ["charge"]
+    assert run["steps"][0]["operation_key"] == f"{run_id}:charge"
 
-    history = client.get(f"/workflows/{workflow_id}/events")
+    collection = client.get("/workflow_runs")
+    assert collection.status_code == 200
+    assert [item["run_id"] for item in collection.json()] == [run_id]
+
+    history = client.get(f"/workflow_runs/{run_id}/events")
     assert history.status_code == 200
-    assert [event["event_type"] for event in history.json()] == ["WorkflowCreated"]
+    assert [event["event_type"] for event in history.json()] == ["WorkflowRunCreated"]
 
-    timeline = client.get(f"/workflows/{workflow_id}/timeline")
+    timeline = client.get(f"/workflow_runs/{run_id}/timeline")
     assert timeline.status_code == 200
     assert "audit_consistent" not in timeline.json()["summary"]
-    assert timeline.json()["entries"][0]["event_type"] == "WorkflowCreated"
+    assert timeline.json()["entries"][0]["event_type"] == "WorkflowRunCreated"
 
-    assert client.get(f"/workflows/{workflow_id}/audit").status_code == 404
-    assert client.get("/workflows/missing/events").status_code == 404
-    assert client.get("/workflows/missing/timeline").status_code == 404
+    assert client.get(f"/workflow_runs/{run_id}/audit").status_code == 404
+    assert client.get("/workflows").status_code == 404
+    assert client.get("/workflow_runs/missing/events").status_code == 404
+    assert client.get("/workflow_runs/missing/timeline").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -47,6 +54,6 @@ def test_workflow_history_and_timeline_endpoints(settings: object) -> None:
 def test_invalid_workflow_definitions_return_422(settings: object, mutate: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
     client = TestClient(create_app(store))
-    value = paid_workflow().model_dump(mode="json")
+    value = paid_workflow_definition().model_dump(mode="json")
     mutate(value)  # type: ignore[operator]
-    assert client.post("/workflows", json=value).status_code == 422
+    assert client.post("/workflow_runs", json=value).status_code == 422

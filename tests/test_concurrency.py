@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from workflow_fixtures import paid_workflow
+from workflow_fixtures import paid_workflow_definition
 
 from crashsafe.engine import WorkflowEngine
 from crashsafe.models import StepRecord, ToolResult
@@ -14,16 +14,16 @@ from crashsafe.storage import LeaseLostError, SQLiteStorage
 
 
 def _create(store: SQLiteStorage, customer: str = "customer"):
-    return store.create_workflow(paid_workflow(customer))
+    return store.create_workflow_run(paid_workflow_definition(customer))
 
 
 def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
     store = SQLiteStorage(tmp_path / "engine.db")
-    workflow = _create(store)
+    run = _create(store)
     first = store.claim_runnable_step("worker-1", 0.05)
     assert first is not None
     attempted = store.record_attempt(
-        first.step.workflow_id,
+        first.step.run_id,
         first.step.id,
         first.lease.owner_id,
         first.lease.fence_token,
@@ -36,7 +36,7 @@ def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
 
     with pytest.raises(LeaseLostError):
         store.complete_step(
-            attempted.workflow_id,
+            attempted.run_id,
             attempted.id,
             {"reference_id": "stale"},
             first.lease.owner_id,
@@ -44,19 +44,19 @@ def test_expired_owner_is_fenced_from_committing(tmp_path: Path) -> None:
         )
 
     retried = store.record_attempt(
-        second.step.workflow_id,
+        second.step.run_id,
         second.step.id,
         second.lease.owner_id,
         second.lease.fence_token,
     )
     store.complete_step(
-        retried.workflow_id,
+        retried.run_id,
         retried.id,
         {"reference_id": "current"},
         second.lease.owner_id,
         second.lease.fence_token,
     )
-    charge = store.get_workflow(workflow.id).steps[0]
+    charge = store.get_workflow_run(run.run_id).steps[0]
     assert charge.attempts == 2
     assert charge.output == {"reference_id": "current"}
 
@@ -76,7 +76,7 @@ class BlockingGateway:
 
 def test_two_workers_do_not_execute_the_same_claim(settings: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
-    workflow = _create(store)
+    run = _create(store)
     gateway = BlockingGateway()
     first = WorkflowEngine(store, gateway, settings, worker_id="worker-1")  # type: ignore[arg-type]
     second = WorkflowEngine(store, gateway, settings, worker_id="worker-2")  # type: ignore[arg-type]
@@ -89,8 +89,8 @@ def test_two_workers_do_not_execute_the_same_claim(settings: object) -> None:
     thread.join(timeout=2)
 
     assert not thread.is_alive()
-    assert gateway.calls == [workflow.steps[0].operation_key]
-    assert store.get_workflow(workflow.id).steps[0].attempts == 1
+    assert gateway.calls == [run.steps[0].operation_key]
+    assert store.get_workflow_run(run.run_id).steps[0].attempts == 1
 
 
 def test_heartbeat_prevents_takeover_during_long_request(settings: object) -> None:
@@ -115,10 +115,10 @@ def test_heartbeat_prevents_takeover_during_long_request(settings: object) -> No
     assert len(gateway.calls) == 1
 
 
-def test_two_workers_can_process_different_workflows(settings: object) -> None:
+def test_two_workers_can_process_different_runs(settings: object) -> None:
     store = SQLiteStorage(settings.engine_db)  # type: ignore[attr-defined]
-    first_workflow = _create(store, "first")
-    second_workflow = _create(store, "second")
+    first_run = _create(store, "first")
+    second_run = _create(store, "second")
     barrier = threading.Barrier(2)
     calls: list[str] = []
     lock = threading.Lock()
@@ -126,9 +126,9 @@ def test_two_workers_can_process_different_workflows(settings: object) -> None:
     class ConcurrentGateway:
         def execute(self, step: StepRecord) -> ToolResult:
             with lock:
-                calls.append(step.workflow_id)
+                calls.append(step.run_id)
             barrier.wait(timeout=2)
-            return ToolResult(operation=step.operation, reference_id=step.workflow_id)
+            return ToolResult(operation=step.operation, reference_id=step.run_id)
 
     gateway = ConcurrentGateway()
     engines = [
@@ -142,4 +142,4 @@ def test_two_workers_can_process_different_workflows(settings: object) -> None:
         thread.join(timeout=2)
 
     assert all(not thread.is_alive() for thread in threads)
-    assert set(calls) == {first_workflow.id, second_workflow.id}
+    assert set(calls) == {first_run.run_id, second_run.run_id}

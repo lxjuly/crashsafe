@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, TypeVar
 
-from crashsafe.history import parse_payload, reduce_workflow_history
+from crashsafe.history import parse_payload, reduce_workflow_run_history
 from crashsafe.models import (
     EventType,
     StepAttemptStartedPayload,
@@ -12,17 +12,17 @@ from crashsafe.models import (
     StepRetryScheduledPayload,
     TimelineEntry,
     TimelineSummary,
-    WorkflowEventRecord,
-    WorkflowTimeline,
+    WorkflowRunEvent,
+    WorkflowRunTimeline,
 )
 
 PayloadT = TypeVar("PayloadT")
 
 
-def build_timeline(events: list[WorkflowEventRecord]) -> WorkflowTimeline:
+def build_timeline(events: list[WorkflowRunEvent]) -> WorkflowRunTimeline:
     if not events:
         raise ValueError("cannot build a timeline without events")
-    rebuilt = reduce_workflow_history(events)
+    rebuilt = reduce_workflow_run_history(events)
     operations = {step.id: step.operation for step in rebuilt.steps}
     origin = events[0].occurred_at
     entries: list[TimelineEntry] = []
@@ -43,7 +43,7 @@ def build_timeline(events: list[WorkflowEventRecord]) -> WorkflowTimeline:
             "operation": operations.get(event.step_id or ""),
             "attempt": event.attempt,
         }
-        if event.event_type == EventType.WORKFLOW_CREATED:
+        if event.event_type == EventType.WORKFLOW_RUN_CREATED:
             values["detail"] = f"{len(rebuilt.steps)} materialized steps persisted"
         elif event.event_type == EventType.STEP_ATTEMPT_STARTED:
             started = _as(payload, StepAttemptStartedPayload)
@@ -70,14 +70,14 @@ def build_timeline(events: list[WorkflowEventRecord]) -> WorkflowTimeline:
                 )
         elif event.event_type == EventType.STEP_FAILED:
             values["detail"] = _as(payload, StepFailedPayload).error
-        elif event.event_type == EventType.WORKFLOW_COMPLETED:
+        elif event.event_type == EventType.WORKFLOW_RUN_COMPLETED:
             values["detail"] = "all committed steps complete"
-        elif event.event_type == EventType.WORKFLOW_FAILED:
-            values["detail"] = str(event.payload.get("error", "workflow failed"))
+        elif event.event_type == EventType.WORKFLOW_RUN_FAILED:
+            values["detail"] = str(event.payload.get("error", "workflow run failed"))
         entries.append(TimelineEntry.model_validate(values))
 
-    return WorkflowTimeline(
-        workflow_id=events[0].workflow_id,
+    return WorkflowRunTimeline(
+        run_id=events[0].run_id,
         entries=entries,
         summary=TimelineSummary(
             status=rebuilt.status,
@@ -90,9 +90,9 @@ def build_timeline(events: list[WorkflowEventRecord]) -> WorkflowTimeline:
     )
 
 
-def format_timeline(timeline: WorkflowTimeline) -> str:
+def format_timeline(timeline: WorkflowRunTimeline) -> str:
     lines = [
-        f"Timeline for {timeline.workflow_id}",
+        f"Timeline for {timeline.run_id}",
         " elapsed   seq  event                 step        attempt  owner/fence  detail",
     ]
     for entry in timeline.entries:

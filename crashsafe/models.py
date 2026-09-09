@@ -11,7 +11,7 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class WorkflowStatus(str, Enum):
+class WorkflowRunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -32,13 +32,13 @@ class StepName(str, Enum):
 
 
 class EventType(str, Enum):
-    WORKFLOW_CREATED = "WorkflowCreated"
+    WORKFLOW_RUN_CREATED = "WorkflowRunCreated"
     STEP_ATTEMPT_STARTED = "StepAttemptStarted"
     STEP_RETRY_SCHEDULED = "StepRetryScheduled"
     STEP_COMPLETED = "StepCompleted"
     STEP_FAILED = "StepFailed"
-    WORKFLOW_COMPLETED = "WorkflowCompleted"
-    WORKFLOW_FAILED = "WorkflowFailed"
+    WORKFLOW_RUN_COMPLETED = "WorkflowRunCompleted"
+    WORKFLOW_RUN_FAILED = "WorkflowRunFailed"
 
 
 class ChargeRequest(StrictModel):
@@ -82,12 +82,12 @@ WorkflowStep = Annotated[
 ]
 
 
-class WorkflowCreate(StrictModel):
+class WorkflowDefinition(StrictModel):
     name: str = Field(min_length=1, max_length=128)
     steps: list[WorkflowStep] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
-    def validate_graph(self) -> WorkflowCreate:
+    def validate_graph(self) -> WorkflowDefinition:
         ids = [step.id for step in self.steps]
         if len(set(ids)) != len(ids):
             raise ValueError("step IDs must be unique")
@@ -135,7 +135,7 @@ class StepDefinition(EventPayload):
     tool_key: str = "mock-tool"
 
 
-class WorkflowCreatedPayload(EventPayload):
+class WorkflowRunCreatedPayload(EventPayload):
     name: str
     steps: list[StepDefinition]
 
@@ -161,11 +161,11 @@ class StepFailedPayload(EventPayload):
     error: str
 
 
-class WorkflowCompletedPayload(EventPayload):
+class WorkflowRunCompletedPayload(EventPayload):
     pass
 
 
-class WorkflowFailedPayload(EventPayload):
+class WorkflowRunFailedPayload(EventPayload):
     step_id: str
     error: str
 
@@ -174,7 +174,7 @@ class StepRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    workflow_id: str
+    run_id: str
     position: int
     operation: StepName
     depends_on: list[str]
@@ -191,19 +191,19 @@ class StepRecord(BaseModel):
     completed_at: Optional[datetime] = None
 
 
-class WorkflowRecord(BaseModel):
-    id: str
+class WorkflowRun(BaseModel):
+    run_id: str
     name: str
-    status: WorkflowStatus
+    status: WorkflowRunStatus
     steps: list[StepRecord]
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
 
 
-class WorkflowEventRecord(BaseModel):
+class WorkflowRunEvent(BaseModel):
     id: int
-    workflow_id: str
+    run_id: str
     sequence: int
     event_type: EventType
     schema_version: int
@@ -213,8 +213,8 @@ class WorkflowEventRecord(BaseModel):
     occurred_at: datetime
 
 
-class WorkflowLease(BaseModel):
-    workflow_id: str
+class WorkflowRunLease(BaseModel):
+    run_id: str
     owner_id: str
     fence_token: int
     lease_expires_at: datetime
@@ -223,7 +223,7 @@ class WorkflowLease(BaseModel):
 
 class ClaimedStep(BaseModel):
     step: StepRecord
-    lease: WorkflowLease
+    lease: WorkflowRunLease
 
 
 class ToolThrottle(BaseModel):
@@ -248,7 +248,7 @@ class TimelineEntry(BaseModel):
 
 
 class TimelineSummary(BaseModel):
-    status: WorkflowStatus
+    status: WorkflowRunStatus
     duration_ms: int
     attempts: int
     retries: int
@@ -256,8 +256,8 @@ class TimelineSummary(BaseModel):
     step_duration_ms: dict[str, int]
 
 
-class WorkflowTimeline(BaseModel):
-    workflow_id: str
+class WorkflowRunTimeline(BaseModel):
+    run_id: str
     entries: list[TimelineEntry]
     summary: TimelineSummary
 

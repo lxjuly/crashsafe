@@ -12,8 +12,8 @@ from typing import Optional
 
 from crashsafe.config import Settings
 from crashsafe.engine import HttpToolGateway, WorkflowEngine
-from crashsafe.models import WorkflowStatus
-from crashsafe.storage import SQLiteStorage, WorkflowNotFoundError
+from crashsafe.models import WorkflowRunStatus
+from crashsafe.storage import SQLiteStorage, WorkflowRunNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,13 @@ class Worker:
                 self._drain_requested.wait(self.poll_interval_seconds)
         logger.info("drain complete; worker stopped accepting steps")
 
-    def run_until_terminal(self, workflow_id: str, timeout_seconds: float) -> int:
+    def run_until_terminal(self, run_id: str, timeout_seconds: float) -> int:
         deadline = time.monotonic() + timeout_seconds
         while not self._drain_requested.is_set() and time.monotonic() < deadline:
-            workflow = self.engine.storage.get_workflow(workflow_id)
-            if workflow.status == WorkflowStatus.COMPLETED:
+            run = self.engine.storage.get_workflow_run(run_id)
+            if run.status == WorkflowRunStatus.COMPLETED:
                 return 0
-            if workflow.status == WorkflowStatus.FAILED:
+            if run.status == WorkflowRunStatus.FAILED:
                 return 2
             outcome = self.engine.run_once()
             if not outcome.did_work:
@@ -68,7 +68,7 @@ def build_worker() -> Worker:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Crashsafe workflow worker")
     parser.add_argument("--once", action="store_true", help="run at most one eligible step")
-    parser.add_argument("--until-terminal", metavar="WORKFLOW_ID")
+    parser.add_argument("--until-terminal", metavar="RUN_ID")
     parser.add_argument("--timeout", type=float, default=30.0)
     return parser.parse_args()
 
@@ -94,8 +94,8 @@ def main() -> None:
         if args.until_terminal:
             try:
                 raise SystemExit(worker.run_until_terminal(args.until_terminal, args.timeout))
-            except WorkflowNotFoundError:
-                logger.error("workflow %s does not exist", args.until_terminal)
+            except WorkflowRunNotFoundError:
+                logger.error("workflow run %s does not exist", args.until_terminal)
                 raise SystemExit(4) from None
         worker.run_forever()
     finally:

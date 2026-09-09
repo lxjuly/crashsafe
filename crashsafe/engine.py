@@ -103,7 +103,7 @@ class HttpToolGateway:
 @dataclass(frozen=True)
 class RunOutcome:
     did_work: bool
-    workflow_id: Optional[str] = None
+    run_id: Optional[str] = None
     step_name: Optional[str] = None
 
 
@@ -111,14 +111,14 @@ class LeaseHeartbeat:
     def __init__(
         self,
         storage: SQLiteStorage,
-        workflow_id: str,
+        run_id: str,
         owner_id: str,
         fence_token: int,
         ttl_seconds: float,
         interval_seconds: float,
     ) -> None:
         self.storage = storage
-        self.workflow_id = workflow_id
+        self.run_id = run_id
         self.owner_id = owner_id
         self.fence_token = fence_token
         self.ttl_seconds = ttl_seconds
@@ -126,7 +126,7 @@ class LeaseHeartbeat:
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
-            name=f"lease-heartbeat-{workflow_id[:8]}",
+            name=f"lease-heartbeat-{run_id[:8]}",
             daemon=True,
         )
 
@@ -141,18 +141,18 @@ class LeaseHeartbeat:
         while not self._stop.wait(self.interval_seconds):
             try:
                 renewed = self.storage.renew_lease(
-                    self.workflow_id,
+                    self.run_id,
                     self.owner_id,
                     self.fence_token,
                     self.ttl_seconds,
                 )
             except Exception:
-                logger.exception("lease heartbeat failed for workflow=%s", self.workflow_id)
+                logger.exception("lease heartbeat failed for run=%s", self.run_id)
                 continue
             if not renewed:
                 logger.warning(
-                    "lease lost workflow=%s worker=%s fence=%d",
-                    self.workflow_id,
+                    "lease lost run=%s worker=%s fence=%d",
+                    self.run_id,
                     self.owner_id,
                     self.fence_token,
                 )
@@ -188,11 +188,11 @@ class WorkflowEngine:
         try:
             # This FULL-synchronous SQLite commit is the durable intent boundary.
             step = self.storage.record_attempt(
-                claim.step.workflow_id, claim.step.id, lease.owner_id, lease.fence_token
+                claim.step.run_id, claim.step.id, lease.owner_id, lease.fence_token
             )
             heartbeat = LeaseHeartbeat(
                 self.storage,
-                step.workflow_id,
+                step.run_id,
                 lease.owner_id,
                 lease.fence_token,
                 self.settings.lease_ttl_seconds,
@@ -201,8 +201,8 @@ class WorkflowEngine:
             heartbeat.start()
             self.failure_injector.crash_if_requested(step, CrashPoint.BEFORE_REQUEST)
             logger.info(
-                "executing workflow=%s step=%s attempt=%d key=%s worker=%s fence=%d",
-                step.workflow_id,
+                "executing run=%s step=%s attempt=%d key=%s worker=%s fence=%d",
+                step.run_id,
                 step.operation.value,
                 step.attempts,
                 step.operation_key,
@@ -214,39 +214,39 @@ class WorkflowEngine:
                 result = self.gateway.execute(step)
             except RetryableToolError as exc:
                 self._handle_retryable_failure(step, exc, lease.owner_id, lease.fence_token)
-                return RunOutcome(True, step.workflow_id, step.operation.value)
+                return RunOutcome(True, step.run_id, step.operation.value)
             except PermanentToolError as exc:
                 self.storage.fail_step(
-                    step.workflow_id,
+                    step.run_id,
                     step.id,
                     str(exc),
                     lease.owner_id,
                     lease.fence_token,
                 )
-                return RunOutcome(True, step.workflow_id, step.operation.value)
+                return RunOutcome(True, step.run_id, step.operation.value)
 
             self.failure_injector.crash_if_requested(step, CrashPoint.AFTER_RESPONSE)
             self.storage.complete_step(
-                step.workflow_id,
+                step.run_id,
                 step.id,
                 self._result_payload(result),
                 lease.owner_id,
                 lease.fence_token,
             )
             self.failure_injector.crash_if_requested(step, CrashPoint.AFTER_COMMIT)
-            return RunOutcome(True, step.workflow_id, step.operation.value)
+            return RunOutcome(True, step.run_id, step.operation.value)
         except LeaseLostError:
             logger.warning(
-                "discarding stale result workflow=%s worker=%s fence=%d",
-                claim.step.workflow_id,
+                "discarding stale result run=%s worker=%s fence=%d",
+                claim.step.run_id,
                 lease.owner_id,
                 lease.fence_token,
             )
-            return RunOutcome(True, claim.step.workflow_id, claim.step.operation.value)
+            return RunOutcome(True, claim.step.run_id, claim.step.operation.value)
         finally:
             if heartbeat is not None:
                 heartbeat.stop()
-            self.storage.release_lease(claim.step.workflow_id, lease.owner_id, lease.fence_token)
+            self.storage.release_lease(claim.step.run_id, lease.owner_id, lease.fence_token)
 
     def _handle_retryable_failure(
         self,
@@ -257,7 +257,7 @@ class WorkflowEngine:
     ) -> None:
         if step.attempts >= self.settings.max_attempts:
             self.storage.fail_step(
-                step.workflow_id,
+                step.run_id,
                 step.id,
                 f"retry budget exhausted: {error}",
                 owner_id,
@@ -271,7 +271,7 @@ class WorkflowEngine:
                 self.settings.max_backoff_seconds,
             )
         self.storage.schedule_retry(
-            step.workflow_id,
+            step.run_id,
             step.id,
             str(error),
             self.clock() + timedelta(seconds=delay),
