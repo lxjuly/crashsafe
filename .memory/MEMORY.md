@@ -61,7 +61,7 @@ Updated: 2026-09-09T04:15:00Z
 - [settled] drain-startup-robustness: The self-contained graceful-drain script
   allocates free loopback ports instead of assuming 8020/8021 are available and
   reports captured service startup output when a child exits early.
-- [settled] persistent-scenario-state: The stack, manual walkthrough, and both
+- [settled] persistent-scenario-state: The supervisor, manual walkthrough, and both
   one-command scenarios default to the same global `.crashsafe/engine.db` and
   `.crashsafe/ledger.db`. Nothing clears them automatically; repeated runs append
   history and assert ledger deltas, while stale unfinished runs require recovery
@@ -83,6 +83,9 @@ Updated: 2026-09-09T04:15:00Z
 - [settled] module-documentation-coverage: Every Python module now states its
   responsibility or test scope, with focused public-path docstrings supplementing
   invariant comments in the critical execution paths.
+- [settled] supervisor-terminology: The local process launcher is consistently
+  named `supervisor.py` and exposed as `crashsafe-supervisor`; “stack” remains
+  reserved for technology-stack prose and the Stack AI company name.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints

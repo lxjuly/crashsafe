@@ -184,7 +184,7 @@ FastAPI workflow API ───────► Pydantic + graph validation
 - `crashsafe/worker.py` — polling worker, lease renewal, fencing, and
   graceful-drain lifecycle.
 - `crashsafe/mock_tool.py` — flaky external boundary and durable deduplication.
-- `crashsafe/stack.py` — local process supervisor and configurable worker pool.
+- `crashsafe/supervisor.py` — local process supervisor and configurable worker pool.
 - `crashsafe/observability.py` — event-to-timeline projection and
   summary formatting.
 - `scripts/demo.py` — planned single canonical deterministic demo scenario;
