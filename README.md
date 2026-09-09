@@ -174,7 +174,7 @@ The independent mock service exposes `GET /ledger`; pass `run_id` to count only
 the side effects created by that workflow run, or omit it for cumulative totals.
 
 The following manual test exposes the recovery boundary instead of letting the
-stack supervisor restart the worker immediately. Run `uv sync` first, then start
+supervisor restart the worker immediately. Run `uv sync` first, then start
 only the API and mock tool in Terminal 1 against a persistent scenario directory:
 
 ```bash
@@ -264,7 +264,7 @@ discovers the unfinished run:
 kill "$API_PID" "$TOOL_PID"
 wait "$API_PID" "$TOOL_PID" 2>/dev/null || true
 CRASHSAFE_STATE_DIR=.crashsafe \
-CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-stack
+CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-supervisor
 ```
 
 Finally, in Terminal 2, wait for the run to become terminal, then print only its
@@ -280,7 +280,7 @@ for _ in {1..100}; do
 done
 [[ "$STATUS" == completed ]] || {
   curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
-  echo "Run did not complete within 20 seconds; inspect the stack logs above."
+  echo "Run did not complete within 20 seconds; inspect the supervisor logs above."
 }
 
 curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
@@ -327,7 +327,7 @@ uv run python scripts/graceful_drain.py
 ```
 
 No application or scenario startup deletes SQLite state. By default,
-`crashsafe-stack`, both scenario scripts, and the manual walkthrough all append
+`crashsafe-supervisor`, both scenario scripts, and the manual walkthrough all append
 to the same global `.crashsafe/engine.db` and `.crashsafe/ledger.db`. Stop any
 running Crashsafe processes before launching a self-contained scenario. Repeated
 runs verify only the side effects added by that invocation rather than assuming

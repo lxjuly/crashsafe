@@ -17,7 +17,7 @@ from typing import Optional
 from crashsafe.config import Settings
 
 
-class StackSupervisor:
+class Supervisor:
     """Start local services, replace crashed workers, and coordinate shutdown."""
 
     def __init__(self) -> None:
@@ -93,7 +93,7 @@ class StackSupervisor:
 
 
 def main() -> None:
-    supervisor = StackSupervisor()
+    supervisor = Supervisor()
     signal.signal(signal.SIGINT, supervisor.request_stop)
     signal.signal(signal.SIGTERM, supervisor.request_stop)
     supervisor.start()
