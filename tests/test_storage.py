@@ -1,3 +1,5 @@
+"""SQLite transactions, migrations, scheduling, and event atomicity tests."""
+
 from __future__ import annotations
 
 import sqlite3

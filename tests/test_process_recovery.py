@@ -1,3 +1,5 @@
+"""Real-process SIGKILL, restart, retry, and graceful-drain tests."""
+
 from __future__ import annotations
 
 import os

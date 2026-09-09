@@ -1,3 +1,9 @@
+"""Pydantic contracts for submitted definitions, persisted state, and API views.
+
+Input models are strict and operation-discriminated. Persisted event payloads are
+separate types so history schema evolution does not silently alter API validation.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
+    """Reject unknown input fields instead of silently discarding caller mistakes."""
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -83,11 +91,14 @@ WorkflowStep = Annotated[
 
 
 class WorkflowDefinition(StrictModel):
+    """A complete materialized workflow validated before it can become a run."""
+
     name: str = Field(min_length=1, max_length=128)
     steps: list[WorkflowStep] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def validate_graph(self) -> WorkflowDefinition:
+        """Reject ambiguous identifiers and dependency graphs that cannot finish."""
         ids = [step.id for step in self.steps]
         if len(set(ids)) != len(ids):
             raise ValueError("step IDs must be unique")

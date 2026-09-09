@@ -1,3 +1,5 @@
+"""Shared isolated settings for storage and engine tests."""
+
 from __future__ import annotations
 
 from pathlib import Path

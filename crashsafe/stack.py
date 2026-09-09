@@ -1,3 +1,9 @@
+"""Local process supervisor for one API, one mock tool, and configurable workers.
+
+It is startup convenience rather than a durability mechanism; replacement workers
+recover exclusively from SQLite and may safely outlive this supervisor design.
+"""
+
 from __future__ import annotations
 
 import os
@@ -12,6 +18,8 @@ from crashsafe.config import Settings
 
 
 class StackSupervisor:
+    """Start local services, replace crashed workers, and coordinate shutdown."""
+
     def __init__(self) -> None:
         settings = Settings.from_env()
         settings.state_dir.mkdir(parents=True, exist_ok=True)

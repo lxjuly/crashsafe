@@ -1,3 +1,5 @@
+"""Environment-backed settings shared by the API, workers, tool, and supervisor."""
+
 from __future__ import annotations
 
 import os
@@ -23,6 +25,8 @@ DEFAULT_TOOL_KEY = "mock-tool"
 
 @dataclass(frozen=True)
 class Settings:
+    """Validated process configuration with persistent paths resolved at startup."""
+
     state_dir: Path
     engine_db: Path
     ledger_db: Path
@@ -39,6 +43,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        """Read one immutable settings snapshot from ``CRASHSAFE_*`` variables."""
         state_dir = Path(os.getenv("CRASHSAFE_STATE_DIR", ".crashsafe")).resolve()
         ledger_path = os.getenv("CRASHSAFE_LEDGER_DB") or os.getenv("CRASHSAFE_TOOL_DB")
         tool_port = int(os.getenv("CRASHSAFE_TOOL_PORT", str(DEFAULT_TOOL_PORT)))

@@ -1,3 +1,9 @@
+"""History-derived timeline construction and terminal-friendly rendering.
+
+Timeline data is never a second persistence model: each view is rebuilt from the
+same ordered events used to verify the scheduling projection.
+"""
+
 from __future__ import annotations
 
 import shutil
@@ -94,6 +100,7 @@ def build_timeline(events: list[WorkflowRunEvent]) -> WorkflowRunTimeline:
 
 
 def format_timeline(timeline: WorkflowRunTimeline, width: Optional[int] = None) -> str:
+    """Render a responsive plain-terminal timeline for demos and manual review."""
     terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
     width = max(72, width if width is not None else terminal_width - 1)
     summary = timeline.summary

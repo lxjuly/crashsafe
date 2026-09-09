@@ -1,3 +1,9 @@
+"""Single-attempt execution loop and HTTP tool boundary.
+
+The engine coordinates persisted claims with external calls but owns neither
+API request handling nor tool side effects. Stable keys bridge that transaction gap.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -65,6 +71,8 @@ class PermanentToolError(Exception):
 
 
 class HttpToolGateway:
+    """Translate mock-tool HTTP outcomes into engine retry semantics."""
+
     def __init__(self, base_url: str, timeout_seconds: float) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
@@ -110,6 +118,8 @@ class RunOutcome:
 
 
 class LeaseHeartbeat:
+    """Best-effort lease renewal for one synchronous tool request."""
+
     def __init__(
         self,
         storage: SQLiteStorage,
@@ -164,6 +174,8 @@ class LeaseHeartbeat:
 
 
 class WorkflowEngine:
+    """Claim and advance at most one eligible step per ``run_once`` call."""
+
     def __init__(
         self,
         storage: SQLiteStorage,

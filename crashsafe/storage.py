@@ -1,3 +1,9 @@
+"""SQLite persistence for event history, projections, leases, and retry timing.
+
+Every logical transition appends its event and updates scheduling projections in
+one transaction. The append-only history remains capable of rebuilding those rows.
+"""
+
 from __future__ import annotations
 
 import json
@@ -62,7 +68,11 @@ class LeaseLostError(RuntimeError):
 
 
 class SQLiteStorage:
-    """SQLite event history plus an atomically maintained scheduling projection."""
+    """SQLite event history plus an atomically maintained scheduling projection.
+
+    Public mutation methods each define a complete workflow transition boundary;
+    callers never receive a connection or compose transactions across network I/O.
+    """
 
     def __init__(self, path: Path, default_tool_key: str = "mock-tool") -> None:
         self.path = path

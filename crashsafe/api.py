@@ -1,3 +1,9 @@
+"""HTTP boundary for creating workflow runs and reading durable run views.
+
+FastAPI validates submitted definitions before this module delegates persistence
+to ``SQLiteStorage``. Workers execute independently; API handlers never run steps.
+"""
+
 from __future__ import annotations
 
 import os
@@ -18,6 +24,7 @@ from crashsafe.storage import SQLiteStorage, WorkflowRunNotFoundError
 
 
 def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
+    """Build the API, optionally around an injected store for deterministic tests."""
     settings = Settings.from_env()
     database = storage or SQLiteStorage(settings.engine_db, settings.tool_key)
     app = FastAPI(title="Crashsafe workflow run API", version="0.1.0")

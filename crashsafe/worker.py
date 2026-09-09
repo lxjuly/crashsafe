@@ -1,3 +1,9 @@
+"""Long-running worker process and graceful-drain signal handling.
+
+The worker owns only polling and lifecycle. ``WorkflowEngine`` advances attempts,
+while SQLite determines which persisted work is eligible after every restart.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -19,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
+    """Poll for work until signalled, then stop after the current attempt."""
+
     def __init__(self, engine: WorkflowEngine, poll_interval_seconds: float) -> None:
         self.engine = engine
         self.poll_interval_seconds = poll_interval_seconds

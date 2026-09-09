@@ -1,3 +1,9 @@
+"""Typed workflow events and the strict reducer that makes history authoritative.
+
+Storage writes events; this module knows only how to validate and fold them. It
+performs no I/O, which keeps reconstruction deterministic and directly testable.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -47,10 +53,12 @@ class HistoryIntegrityError(ValueError):
 
 
 def parse_payload(event_type: EventType, payload: dict[str, Any]) -> EventPayload:
+    """Validate an untyped stored payload against its event-specific schema."""
     return PAYLOAD_MODELS[event_type].model_validate(payload)
 
 
 def canonical_payload(event_type: EventType, payload: EventPayload) -> dict[str, Any]:
+    """Serialize a typed event payload into its stable JSON-compatible form."""
     expected = PAYLOAD_MODELS[event_type]
     if not isinstance(payload, expected):
         raise TypeError(f"{event_type.value} requires {expected.__name__}")

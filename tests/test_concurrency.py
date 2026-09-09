@@ -1,3 +1,5 @@
+"""Lease ownership, fencing, heartbeat, and concurrent-worker tests."""
+
 from __future__ import annotations
 
 import threading

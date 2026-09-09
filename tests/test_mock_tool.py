@@ -1,3 +1,5 @@
+"""Durable tool idempotency, flakiness, migration, and ledger-view tests."""
+
 from __future__ import annotations
 
 from pathlib import Path

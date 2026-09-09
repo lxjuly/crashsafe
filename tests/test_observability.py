@@ -1,3 +1,5 @@
+"""History-derived timeline summaries and terminal rendering tests."""
+
 from __future__ import annotations
 
 from workflow_fixtures import paid_workflow_definition

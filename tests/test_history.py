@@ -1,3 +1,5 @@
+"""Event reducer integrity and projection reconstruction tests."""
+
 from __future__ import annotations
 
 import sqlite3

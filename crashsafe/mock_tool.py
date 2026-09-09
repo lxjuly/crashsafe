@@ -1,3 +1,9 @@
+"""Independent flaky HTTP tool with a durable idempotent side-effect ledger.
+
+This process intentionally has no transaction with the workflow engine. Its own
+SQLite commit turns repeated at-least-once requests into one durable side effect.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -165,6 +171,7 @@ class ToolStore:
             connection.close()
 
     def summary(self, run_id: Optional[str] = None) -> LedgerSummary:
+        """Count all effects, or only keys generated for one workflow run."""
         query = "SELECT operation, COUNT(*) AS count FROM side_effects"
         parameters: tuple[str, ...] = ()
         if run_id is not None:
@@ -188,6 +195,7 @@ class ToolStore:
 
 
 def create_app(store: Optional[ToolStore] = None) -> FastAPI:
+    """Build the mock service with configurable random and deterministic failures."""
     settings = Settings.from_env()
     tool_store = store or ToolStore(settings.ledger_db)
     app = FastAPI(title="Crashsafe flaky mock tool", version="0.1.0")

@@ -1,3 +1,5 @@
+"""FastAPI validation and workflow-run read-surface tests."""
+
 from __future__ import annotations
 
 import pytest

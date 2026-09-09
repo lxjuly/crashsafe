@@ -1,3 +1,5 @@
+"""Reusable validated workflow definitions for unit and integration tests."""
+
 from __future__ import annotations
 
 from crashsafe.models import WorkflowDefinition
