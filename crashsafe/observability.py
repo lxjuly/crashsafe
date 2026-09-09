@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, TypeVar
+from typing import Any, Optional, TypeVar
 
 from crashsafe.history import parse_payload, reduce_workflow_run_history
 from crashsafe.models import (
@@ -91,28 +91,69 @@ def build_timeline(events: list[WorkflowRunEvent]) -> WorkflowRunTimeline:
 
 
 def format_timeline(timeline: WorkflowRunTimeline) -> str:
+    width = 96
+    summary = timeline.summary
+    status_symbol = "✓" if summary.status.value == "completed" else "●"
     lines = [
-        f"Timeline for {timeline.run_id}",
-        " elapsed   seq  event                 step        attempt  owner/fence  detail",
+        "╭─ WORKFLOW RUN " + "─" * (width - 16),
+        f"│ ID       {timeline.run_id}",
+        (
+            f"│ STATUS   {status_symbol} {summary.status.value.upper():<9} "
+            f"DURATION  {_format_duration(summary.duration_ms):<8} "
+            f"ATTEMPTS  {summary.attempts:<3}  RETRIES  {summary.retries:<3}  "
+            f"PLANNED WAIT  {_format_duration(summary.planned_wait_ms)}"
+        ),
+        "├" + "─" * (width - 1),
+        "│ TIME       #   EVENT                 STEP                TRY   WORKER · FENCE",
+        "├" + "─" * (width - 1),
     ]
     for entry in timeline.entries:
-        owner = "-" if entry.worker_id is None else f"{entry.worker_id}/{entry.fence_token}"
-        detail = entry.detail or ""
-        if entry.wait_ms is not None:
-            detail = f"wait={entry.wait_ms}ms {detail}"
+        symbol, event_label = _event_display(entry.event_type)
+        owner = "—" if entry.worker_id is None else f"{entry.worker_id} · f{entry.fence_token}"
+        attempt = "—" if entry.attempt is None else f"#{entry.attempt}"
         lines.append(
-            f" {entry.elapsed_ms:>7}ms {entry.sequence:>4}  "
-            f"{entry.event_type.value:<21} "
-            f"{(entry.step_id or '-'): <11} "
-            f"{str(entry.attempt or '-'):>7}  {owner:<12} {detail}"
+            f"│ +{_format_duration(entry.elapsed_ms):<9} {entry.sequence:>2}  "
+            f"{symbol} {event_label:<19} {(entry.step_id or 'run'):<19} "
+            f"{attempt:<5} {owner}"
         )
-    summary = timeline.summary
-    lines.append(
-        f"Summary: status={summary.status.value} duration={summary.duration_ms}ms "
-        f"attempts={summary.attempts} retries={summary.retries} "
-        f"planned_wait={summary.planned_wait_ms}ms"
-    )
+        for index, detail in enumerate(_timeline_details(entry.detail, entry.wait_ms)):
+            branch = "↳" if index == 0 else " "
+            lines.append(f"│              {branch} {detail}")
+    lines.append("╰" + "─" * (width - 1))
     return "\n".join(lines)
+
+
+def _event_display(event_type: EventType) -> tuple[str, str]:
+    return {
+        EventType.WORKFLOW_RUN_CREATED: ("◇", "RUN CREATED"),
+        EventType.STEP_ATTEMPT_STARTED: ("●", "ATTEMPT STARTED"),
+        EventType.STEP_RETRY_SCHEDULED: ("↻", "RETRY SCHEDULED"),
+        EventType.STEP_COMPLETED: ("✓", "STEP COMPLETED"),
+        EventType.STEP_FAILED: ("✕", "STEP FAILED"),
+        EventType.WORKFLOW_RUN_COMPLETED: ("◆", "RUN COMPLETED"),
+        EventType.WORKFLOW_RUN_FAILED: ("✕", "RUN FAILED"),
+    }[event_type]
+
+
+def _timeline_details(detail: Optional[str], wait_ms: Optional[int]) -> list[str]:
+    values: list[str] = []
+    if wait_ms is not None:
+        values.append(f"wait {_format_duration(wait_ms)}")
+    if detail:
+        if "; key=" in detail:
+            message, key = detail.split("; key=", maxsplit=1)
+            values.extend([message, f"key  {key}"])
+        elif values:
+            values[0] = f"{values[0]} · {detail}"
+        else:
+            values.append(detail)
+    return values
+
+
+def _format_duration(milliseconds: int) -> str:
+    if milliseconds < 1000:
+        return f"{milliseconds}ms"
+    return f"{milliseconds / 1000:.3f}s"
 
 
 def _completion_detail(output: dict[str, Any]) -> str:

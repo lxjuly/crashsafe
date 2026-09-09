@@ -40,5 +40,11 @@ def test_timeline_is_derived_from_history(settings: object) -> None:
     assert store.projection_matches_history(run.run_id)
     assert timeline.entries[1].worker_id == "timeline-worker"
     assert timeline.entries[1].fence_token == 1
-    assert "StepRetryScheduled" in rendered
+    assert "↻ RETRY SCHEDULED" in rendered
+    assert "✓ COMPLETED" in rendered
+    assert f"│ ID       {run.run_id}" in rendered
+    assert "PLANNED WAIT" in rendered
+    assert "timeline-worker · f1" in rendered
+    assert "╭─ WORKFLOW RUN" in rendered
+    assert rendered.endswith("─")
     assert "audit" not in rendered
