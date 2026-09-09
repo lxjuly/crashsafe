@@ -721,7 +721,7 @@ Outcome:
   model/invariants/state-machine/demo format.
 - Updated `make demo` with four readable checkpoints and assertions for event
   history, same-key recovery, projection consistency, and the durable ledger.
-- Recorded root-level `crashsafe-demo.mov`: a 7.9-second cropped plain-terminal
+- Recorded root-level `crashsafe-demo.mp4`: a cropped plain-terminal
   `SIGKILL` recovery with same-key attempts, history audit, one-charge evidence,
   and the final history-derived timeline.
 
@@ -1046,14 +1046,14 @@ Status: complete.
    `uv sync` plus `uv run ...` commands. Remove obsolete demo targets, helper
    scripts, stale recordings, generated state, caches, and superseded
    documentation. After cleanup, `scripts/` contains only `demo.py`, the root
-   contains only the current `crashsafe-demo.mov`, and `rg --files` shows no
+   contains only the current `crashsafe-demo.mp4`, and `rg --files` shows no
    generated databases, logs, virtual environments, or Python caches.
 9. Rewrite README built/cut scope, execution model, failure table, request
    example, and demo commands. State explicitly that Crashsafe executes a
    submitted materialized DAG; it does not parse templates or replay arbitrary
    workflow code like Temporal.
 10. Update `TESTING.md` around one canonical demo plus focused feature tests.
-    Refresh `crashsafe-demo.mov` because the request body, step IDs, consolidated
+    Refresh `crashsafe-demo.mp4` because the request body, step IDs, consolidated
     flow, and removal of public audit output make the current video outdated.
 11. Run the entire suite at least three times, then run Ruff, strict mypy, and
     the sole `uv run python scripts/demo.py` command before marking either phase

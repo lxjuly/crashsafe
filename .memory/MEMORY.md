@@ -74,6 +74,9 @@ Updated: 2026-09-09T04:15:00Z
   worker engine, independent database domains, and idempotent tool boundary;
   concise comments now explain every durability-critical transaction, recovery,
   retry, lease, reducer, drain, and deduplication path.
+- [settled] run-scoped-ledger-view: `GET /ledger?run_id={run_id}` filters
+  side-effect counts by the engine's stable `{run_id}:{step_id}` keys, allowing
+  exactly-once evidence without confusing it with cumulative persisted totals.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints
@@ -88,7 +91,7 @@ Updated: 2026-09-09T04:15:00Z
 - [settled] targeted-demo-failure: `CRASHSAFE_FAIL_FIRST_OPERATION` deterministically
   injects one pre-side-effect 429 for a selected operation so the core demo can
   order concurrent crash and retry evidence without timing luck.
-- [settled] current-verification: All 41 tests, Ruff, strict mypy, shell syntax,
+- [settled] current-verification: All 42 tests, Ruff, strict mypy, shell syntax,
   and the combined canonical demo pass.
 - [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
 - [superseded] refreshed-submission-video: The existing root recording predates
@@ -111,7 +114,8 @@ Updated: 2026-09-09T04:15:00Z
 - [accepted] honest-concurrency-boundary: Promise one valid committing owner, not exactly-once compute; an expired worker may overlap a replacement but is fenced from state and external duplicates use the stable key.
 - [accepted] tool-wide-cooldown: On 429, atomically persist both the step retry decision and the maximum tool-level blocked-until deadline consulted by all workers.
 - [accepted] timeline-is-derived: Build observability from immutable events rather than a second mutable truth, and show unmatched attempts honestly as unknown outcomes.
-- [accepted] record-submission-video: Keep the plain-Terminal `crashsafe-demo.mov` at the repository root and link it from the README.
+- [accepted] record-submission-video: Keep the compressed plain-Terminal
+  `crashsafe-demo.mp4` at the repository root and link it from the README.
 - [superseded] temporal-remains-experiment: The earlier isolated Temporal comparison is superseded by Phase 15 repository cleanup; remove `experiments/temporal_compare/` and retain only concise prose comparison where useful.
 - [accepted] immutable-submitted-plan: Validate and persist the complete submitted
   definition, dependency edges, concrete requests, and server-generated stable
