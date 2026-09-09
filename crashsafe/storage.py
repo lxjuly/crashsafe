@@ -75,6 +75,8 @@ class SQLiteStorage:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
+        # FULL asks SQLite to sync each commit through the OS before reporting
+        # success, which is the durability boundary used by the engine.
         connection.execute("PRAGMA synchronous = FULL")
         return connection
 
@@ -82,6 +84,8 @@ class SQLiteStorage:
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
         try:
+            # IMMEDIATE obtains the single-writer reservation up front. Claims,
+            # events, and their projections therefore cannot interleave halfway.
             connection.execute("BEGIN IMMEDIATE")
             yield connection
             connection.commit()
@@ -94,6 +98,8 @@ class SQLiteStorage:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
+            # SQLite's WAL protects each database commit from process failure;
+            # workflow_run_events is the higher-level log that survives workers.
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             legacy = connection.execute(
@@ -282,6 +288,8 @@ class SQLiteStorage:
             for position, step in enumerate(definition.steps)
         ]
         created_payload = WorkflowRunCreatedPayload(name=definition.name, steps=definitions)
+        # The immutable definition snapshot and mutable scheduling projection are
+        # born in the same commit, so no partially materialized run can be visible.
         with self._transaction() as connection:
             connection.execute(
                 """
@@ -375,11 +383,15 @@ class SQLiteStorage:
             connection.close()
 
     def projection_matches_history(self, run_id: str) -> bool:
+        # The projection is a disposable read/scheduling index; history is the
+        # logical source of truth and must reduce to the same public run state.
         return self.get_workflow_run(run_id) == reduce_workflow_run_history(
             self.list_events(run_id)
         )
 
     def rebuild_projection(self, run_id: str) -> WorkflowRun:
+        # Rebuild only projection tables. The append-only events are deliberately
+        # left untouched and replayed through the strict reducer first.
         rebuilt = reduce_workflow_run_history(self.list_events(run_id))
         created = WorkflowRunCreatedPayload.model_validate(self.list_events(run_id)[0].payload)
         with self._transaction() as connection:
@@ -428,6 +440,8 @@ class SQLiteStorage:
         current_time = now or utc_now()
         current = to_db(current_time)
         expires = to_db(current_time + timedelta(seconds=lease_ttl_seconds))
+        # Selection and lease replacement are one write transaction. A takeover
+        # always advances the fence, invalidating commits from the former owner.
         with self._transaction() as connection:
             row = self._select_runnable(connection, current, include_lease=True)
             if row is None:
@@ -461,6 +475,8 @@ class SQLiteStorage:
     def _select_runnable(
         self, connection: sqlite3.Connection, current: str, *, include_lease: bool
     ) -> Optional[sqlite3.Row]:
+        # Eligibility is entirely persisted: run/step state, retry deadline,
+        # tool throttle, expired lease, and completed DAG dependencies.
         lease_clause = "AND (l.run_id IS NULL OR l.lease_expires_at <= ?)" if include_lease else ""
         throttle_join = (
             "LEFT JOIN tool_throttles t ON t.tool_key = s.tool_key" if include_lease else ""
@@ -586,6 +602,8 @@ class SQLiteStorage:
             if blocked is not None:
                 raise RuntimeError(f"step {step_id} has incomplete dependencies")
             attempt = int(row["attempts"]) + 1
+            # This is the engine's write-ahead intent: persist the exact request
+            # and stable key before any network call can leave the worker.
             self._append_event(
                 connection,
                 run_id,
@@ -628,6 +646,8 @@ class SQLiteStorage:
         with self._transaction() as connection:
             row = self._get_step_row(connection, run_id, step_id)
             self._require_active_attempt(connection, row, owner_id, fence_token)
+            # Event and deadline commit together, so restart cannot retry early or
+            # lose the explanation for why this attempt is waiting.
             self._append_event(
                 connection,
                 run_id,
@@ -652,6 +672,8 @@ class SQLiteStorage:
                 ),
             )
             if throttle_tool:
+                # A 429 deadline gates every run using this tool, and commits with
+                # the failed attempt so restart cannot forget the shared cooldown.
                 connection.execute(
                     """
                     INSERT INTO tool_throttles VALUES (?, ?, ?, ?)
@@ -677,6 +699,8 @@ class SQLiteStorage:
             row = self._get_step_row(connection, run_id, step_id)
             self._require_active_attempt(connection, row, owner_id, fence_token)
             attempt = int(row["attempts"])
+            # The failed step and terminal run events share the projection commit;
+            # downstream DAG steps therefore never become eligible after failure.
             self._append_event(
                 connection,
                 run_id,
@@ -751,6 +775,8 @@ class SQLiteStorage:
                 ).fetchone()[0]
             )
             if remaining == 0:
+                # Final step output and terminal run state share a commit: readers
+                # never see a completed run missing its last durable result.
                 self._append_event(
                     connection,
                     run_id,
@@ -778,6 +804,8 @@ class SQLiteStorage:
         attempt: Optional[int] = None,
         schema_version: int = EVENT_SCHEMA_VERSION,
     ) -> None:
+        # BEGIN IMMEDIATE serializes writers, so MAX(sequence)+1 is monotonic and
+        # unique for this run without a separate sequence allocator.
         sequence = int(
             connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM workflow_run_events WHERE run_id=?",
@@ -826,6 +854,8 @@ class SQLiteStorage:
             return
         if owner_id is None or fence_token is None:
             raise ValueError("owner_id and fence_token must be supplied together")
+        # Every worker-originated transition rechecks the live fence inside its
+        # commit transaction; a slow or partitioned former owner cannot commit.
         row = connection.execute(
             """
             SELECT 1 FROM workflow_run_leases WHERE run_id=? AND owner_id=?

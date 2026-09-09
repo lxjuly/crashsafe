@@ -27,9 +27,13 @@ class Worker:
     def request_stop(self, signum: int, frame: Optional[FrameType]) -> None:
         del frame
         logger.info("received signal %d; draining after the current attempt", signum)
+        # Stop admitting new attempts; the synchronous run_once already in flight
+        # is allowed to reach a durable retry, failure, or completion boundary.
         self._drain_requested.set()
 
     def run_forever(self) -> None:
+        # Startup needs no replay sweep: polling the persisted eligibility query
+        # naturally resumes every unfinished run whose deadline and lease permit it.
         while not self._drain_requested.is_set():
             outcome = self.engine.run_once()
             if not outcome.did_work:

@@ -58,6 +58,11 @@ def canonical_payload(event_type: EventType, payload: EventPayload) -> dict[str,
 
 
 def reduce_workflow_run_history(events: Sequence[WorkflowRunEvent]) -> WorkflowRun:
+    """Strictly fold authoritative events into the disposable run projection.
+
+    Besides rebuilding state, the reducer rejects gaps, illegal transitions,
+    mutated step intents, and events after a terminal outcome.
+    """
     if not events:
         raise HistoryIntegrityError("workflow run history is empty")
 
@@ -84,6 +89,8 @@ def reduce_workflow_run_history(events: Sequence[WorkflowRunEvent]) -> WorkflowR
             ) from exc
 
         if event.event_type == EventType.WORKFLOW_RUN_CREATED:
+            # The first event is a self-contained execution snapshot; replay never
+            # needs the original JSON file or a mutable definition registry.
             if run is not None or event.sequence != 1:
                 raise HistoryIntegrityError(
                     "WorkflowRunCreated must be the first and only creation"
@@ -161,6 +168,8 @@ def reduce_workflow_run_history(events: Sequence[WorkflowRunEvent]) -> WorkflowR
         step_index, step = _find_step_with_index(run, event.step_id)
 
         if event.event_type == EventType.STEP_ATTEMPT_STARTED:
+            # Attempt events restate immutable execution intent so history proves
+            # what was authorized before the corresponding side effect request.
             started = _require_payload(payload, StepAttemptStartedPayload)
             if event.schema_version == ATTEMPT_EVENT_SCHEMA_VERSION and (
                 started.worker_id is None or started.fence_token is None

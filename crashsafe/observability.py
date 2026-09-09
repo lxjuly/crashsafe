@@ -22,6 +22,7 @@ PayloadT = TypeVar("PayloadT")
 
 
 def build_timeline(events: list[WorkflowRunEvent]) -> WorkflowRunTimeline:
+    """Build a read-only operational view from the same history used for recovery."""
     if not events:
         raise ValueError("cannot build a timeline without events")
     rebuilt = reduce_workflow_run_history(events)

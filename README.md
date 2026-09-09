@@ -76,13 +76,26 @@ execution with deliberate human product and architectural judgment.
 
 ### Execution model
 
-```text
-POST definition ──► FastAPI ──► workflow run in engine.db ◄── fenced workers
-                                 history + projections          │
-                                                                │ HTTP + stable key
-                                                                ▼
-                                                          mock tool ──► tools.db
+```mermaid
+flowchart LR
+    client[Client]
+    api[FastAPI service]
+    engine[Worker engine<br/>one attempt per claim]
+    engine_db[(engine.db<br/>event history, projections,<br/>leases and retry deadlines)]
+    tool[Mock tool service]
+    ledger[(ledger.db<br/>side effects and<br/>idempotency results)]
+
+    client -->|POST /workflow_runs| api
+    client -->|GET run, events, timeline| api
+    api -->|create and read runs| engine_db
+    engine -->|claim, append event,<br/>update projection| engine_db
+    engine -->|HTTP + stable<br/>idempotency key| tool
+    tool -->|atomic effect + result| ledger
 ```
+
+The two databases are separate transaction domains. There is deliberately no
+transaction across HTTP: the engine makes the request at least once, while the
+tool's durable idempotency record makes repeating the side effect safe.
 
 `POST /workflow_runs` validates the entire concrete definition with Pydantic and
 graph checks. In one `BEGIN IMMEDIATE` transaction it appends
@@ -133,7 +146,7 @@ a multi-host consensus substitute) and a conservative tool-wide cooldown (one
 |---|---|---|
 | Before the intent transaction commits | Step remains `pending`; another owner starts attempt 1. | No request was authorized by visible durable state. |
 | After intent commits, before HTTP send | An unmatched attempt remains; after lease expiry, a higher fence records another attempt with the same key. | A needless repeat is harmless at the idempotent tool. |
-| After the tool commits charge, before the response is recorded | `tools.db` has one effect and cached result; engine history has an unmatched attempt. Recovery repeats the same key and receives that result. | Effect and idempotency result committed atomically. This is the demo's `kill -9` point. |
+| After the tool commits charge, before the response is recorded | `ledger.db` has one effect and cached result; engine history has an unmatched attempt. Recovery repeats the same key and receives that result. | Effect and idempotency result committed atomically. This is the demo's `kill -9` point. |
 | After the old lease expires while its call is still running | A replacement owns a higher fence. The stale engine commit is rejected. | Fencing protects engine state; the stable key protects the external effect. |
 | During or after the completion transaction | An uncommitted event/projection pair rolls back together; a committed pair is skipped on restart. | No half-transition is visible, and completed steps never reopen. |
 
@@ -142,44 +155,91 @@ did not happen. Idempotency makes both possible worlds safe.
 
 ## API and workflow definition
 
-```bash
-curl -sS -X POST http://127.0.0.1:8000/workflow_runs \
-  -H 'content-type: application/json' \
-  --data-binary @workflows/paid-onboarding.json
-```
-
-```json
-{
-  "name": "paid-onboarding",
-  "steps": [
-    {
-      "id": "charge",
-      "operation": "charge",
-      "depends_on": [],
-      "request": {"customer_id": "paid-customer", "amount_cents": 4200}
-    },
-    {
-      "id": "provision",
-      "operation": "provision",
-      "depends_on": ["charge"],
-      "request": {"customer_id": "paid-customer", "plan": "standard"}
-    }
-  ]
-}
-```
-
 The repository includes complete
 [`paid-onboarding`](workflows/paid-onboarding.json) and
 [`trial-activation`](workflows/trial-activation.json) definitions. These files
 are authoring examples, not a server-side registry; every created run owns an
-immutable snapshot of the submitted definition. Endpoints:
+immutable snapshot of the submitted definition.
 
-```text
-POST /workflow_runs
-GET  /workflow_runs
-GET  /workflow_runs/{run_id}
-GET  /workflow_runs/{run_id}/events
-GET  /workflow_runs/{run_id}/timeline
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/workflow_runs` | Validate a definition and create one durable run. |
+| `GET` | `/workflow_runs` | List runs, newest first. |
+| `GET` | `/workflow_runs/{run_id}` | Read the run and its projected step state. |
+| `GET` | `/workflow_runs/{run_id}/events` | Read its ordered append-only history. |
+| `GET` | `/workflow_runs/{run_id}/timeline` | Read history-derived retry and execution timing. |
+| `GET` | `/healthz` | Check API availability. |
+
+The following manual test exposes the recovery boundary instead of letting the
+stack supervisor restart the worker immediately. Run `uv sync` first, then start
+only the API and mock tool in Terminal 1 against a persistent scenario directory:
+
+```bash
+uv sync
+export CRASHSAFE_STATE_DIR=.crashsafe
+mkdir -p "$CRASHSAFE_STATE_DIR"
+CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-mock-tool >"$CRASHSAFE_STATE_DIR/tool.log" 2>&1 &
+TOOL_PID=$!
+uv run crashsafe-api >"$CRASHSAFE_STATE_DIR/api.log" 2>&1 &
+API_PID=$!
+until curl -fsS http://127.0.0.1:8000/healthz >/dev/null && \
+      curl -fsS http://127.0.0.1:8001/healthz >/dev/null; do sleep 0.2; done
+```
+
+In Terminal 2 (with `jq` installed), submit a run and start one worker whose
+charge response is delayed after the tool commits. Kill that worker at the
+ambiguous point, then verify that the durable run is still `running` and its
+charge is `intent_recorded`:
+
+```bash
+export CRASHSAFE_STATE_DIR=.crashsafe
+API_URL=http://127.0.0.1:8000
+BASELINE_CHARGES=$(curl -sS http://127.0.0.1:8001/ledger | jq -r '.charges')
+RUN_ID=$(curl -sS -X POST "$API_URL/workflow_runs" \
+  -H 'content-type: application/json' \
+  --data-binary @workflows/paid-onboarding.json | jq -r '.run_id')
+
+rm -f "$CRASHSAFE_STATE_DIR/worker.pid"
+CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge \
+CRASHSAFE_REQUEST_TIMEOUT=60 \
+CRASHSAFE_WORKER_PID_FILE="$CRASHSAFE_STATE_DIR/worker.pid" \
+uv run crashsafe-worker >"$CRASHSAFE_STATE_DIR/worker.log" 2>&1 &
+WORKER_JOB=$!
+
+until [[ -s "$CRASHSAFE_STATE_DIR/worker.pid" ]]; do sleep 0.1; done
+WORKER_PID=$(<"$CRASHSAFE_STATE_DIR/worker.pid")
+until (( $(curl -sS http://127.0.0.1:8001/ledger | jq -r '.charges') > BASELINE_CHARGES )); do
+  sleep 0.1
+done
+
+kill -9 "$WORKER_PID"
+wait "$WORKER_JOB" 2>/dev/null || true
+curl -sS "$API_URL/workflow_runs/$RUN_ID" |
+  jq -e 'select(.status == "running") | {run_id, status, steps: [.steps[] | {id, status}]}'
+```
+
+Back in Terminal 1, stop the inspection-only API and tool, then restart the
+complete server against the same database. Its replacement worker automatically
+discovers the unfinished run:
+
+```bash
+kill "$API_PID" "$TOOL_PID"
+wait "$API_PID" "$TOOL_PID" 2>/dev/null || true
+CRASHSAFE_STATE_DIR=.crashsafe \
+CRASHSAFE_FLAKY_RATE=0 uv run crashsafe-stack
+```
+
+Finally, in Terminal 2, wait for the run to become terminal and inspect the
+completed projection, ordered history, timeline, and deduplicated ledger:
+
+```bash
+until STATUS=$(curl -fsS "$API_URL/workflow_runs/$RUN_ID" | jq -r '.status') && \
+      [[ "$STATUS" != "running" ]]; do sleep 0.2; done
+
+curl -sS "$API_URL/workflow_runs/$RUN_ID" | jq -e 'select(.status == "completed")'
+curl -sS "$API_URL/workflow_runs/$RUN_ID/events" | jq .
+curl -sS "$API_URL/workflow_runs/$RUN_ID/timeline" | jq .
+curl -sS http://127.0.0.1:8001/ledger | jq .
 ```
 
 ## Demo
@@ -201,8 +261,8 @@ Immediately after SIGKILL, it prints both history-derived timelines: the paid
 run has an unmatched charge attempt with an unknown outcome, while the trial
 run has a persisted retry deadline. It then starts one replacement worker,
 prints both completed timelines, and passes only when the retry waited as
-directed and the ledger contains exactly **one charge, two provisions, and three
-notifications**. The brief overlap between workers 1 and 2 also exercises
+directed and that invocation adds exactly **one charge, two provisions, and
+three notifications**. The brief overlap between workers 1 and 2 also exercises
 leased concurrent execution without making concurrency a separate demo.
 
 [Watch the terminal demo](crashsafe-demo.mov).
@@ -220,3 +280,21 @@ one charge attempt and exactly one charge:
 uv sync
 uv run python scripts/graceful_drain.py
 ```
+
+No application or scenario startup deletes SQLite state. By default,
+`crashsafe-stack`, both scenario scripts, and the manual walkthrough all append
+to the same global `.crashsafe/engine.db` and `.crashsafe/ledger.db`. Stop any
+running Crashsafe processes before launching a self-contained scenario. Repeated
+runs verify only the side effects added by that invocation rather than assuming
+an empty ledger. If an earlier invocation left unfinished runs, recover them or
+clear `.crashsafe` manually before retrying.
+
+`engine.db` is the workflow engine's durable database: it contains submitted
+definitions, append-only event histories, scheduling projections, leases, and
+retry deadlines. `ledger.db` belongs only to the mock tool and contains its
+idempotency results and side-effect ledger.
+Keeping these as separate SQLite databases preserves the real network ambiguity;
+there is no transaction shared between engine state and external effects. On
+first startup, a legacy `tools.db` is renamed to `ledger.db` without discarding
+its contents. `CRASHSAFE_ENGINE_DB` and `CRASHSAFE_LEDGER_DB` can override the
+two paths explicitly.

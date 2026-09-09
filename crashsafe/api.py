@@ -30,6 +30,8 @@ def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
         request: WorkflowDefinition,
         store: SQLiteStorage = Depends(get_storage),
     ) -> WorkflowRun:
+        # A 201 means the definition snapshot, creation event, and scheduling
+        # projection committed together; the source JSON is not needed to resume.
         return store.create_workflow_run(request)
 
     @app.get("/workflow_runs/{run_id}", response_model=WorkflowRun)
@@ -69,6 +71,8 @@ def create_app(storage: Optional[SQLiteStorage] = None) -> FastAPI:
         store: SQLiteStorage = Depends(get_storage),
     ) -> WorkflowRunTimeline:
         try:
+            # Observability is derived from authoritative history, not a second
+            # independently updated audit or metrics store.
             return build_timeline(store.list_events(run_id))
         except WorkflowRunNotFoundError as exc:
             raise HTTPException(

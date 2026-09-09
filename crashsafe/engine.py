@@ -85,6 +85,8 @@ class HttpToolGateway:
             raise RetryableToolError(f"tool transport error: {exc}") from exc
 
         if response.status_code == HTTP_TOO_MANY_REQUESTS:
+            # Propagate the provider's deadline instead of collapsing 429 into the
+            # engine's generic exponential-backoff policy.
             retry_after = response.headers.get(RETRY_AFTER_HEADER)
             try:
                 delay = float(retry_after) if retry_after is not None else None
@@ -138,6 +140,8 @@ class LeaseHeartbeat:
         self._thread.join(timeout=self.interval_seconds + 1.0)
 
     def _run(self) -> None:
+        # Heartbeats extend ownership during slow HTTP calls. Correctness still
+        # comes from the fence check on commit, not from timing alone.
         while not self._stop.wait(self.interval_seconds):
             try:
                 renewed = self.storage.renew_lease(
@@ -177,6 +181,8 @@ class WorkflowEngine:
         self.clock = clock
 
     def run_once(self) -> RunOutcome:
+        # The database acts as the durable queue. Any process may claim the next
+        # eligible run, but only one unexpired fence can commit its result.
         claim = self.storage.claim_runnable_step(
             self.worker_id, self.settings.lease_ttl_seconds, now=self.clock()
         )
@@ -211,6 +217,8 @@ class WorkflowEngine:
             )
 
             try:
+                # No engine transaction spans this call. A crash can make its
+                # outcome ambiguous, so recovery repeats it with the persisted key.
                 result = self.gateway.execute(step)
             except RetryableToolError as exc:
                 self._handle_retryable_failure(step, exc, lease.owner_id, lease.fence_token)
@@ -226,6 +234,8 @@ class WorkflowEngine:
                 return RunOutcome(True, step.run_id, step.operation.value)
 
             self.failure_injector.crash_if_requested(step, CrashPoint.AFTER_RESPONSE)
+            # If ownership expired while the tool ran, complete_step rejects this
+            # stale result and the new owner resolves it through idempotent retry.
             self.storage.complete_step(
                 step.run_id,
                 step.id,
@@ -266,6 +276,8 @@ class WorkflowEngine:
             return
         delay = error.retry_after_seconds
         if delay is None:
+            # Locally generated exponential backoff is used only when the tool did
+            # not provide a Retry-After deadline.
             delay = min(
                 self.settings.base_backoff_seconds * (2 ** (step.attempts - 1)),
                 self.settings.max_backoff_seconds,

@@ -62,6 +62,8 @@ class StackSupervisor:
                 if name.startswith("worker-"):
                     index = int(name.split("-")[1])
                     print(f"{name} exited ({return_code}); restarting", flush=True)
+                    # The replacement carries no in-memory state; it discovers
+                    # unfinished work solely from engine.db after lease expiry.
                     self._start_worker(index)
                     continue
                 print(f"{name} exited unexpectedly ({return_code})", file=sys.stderr)
