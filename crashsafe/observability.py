@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import textwrap
 from datetime import datetime, timedelta
 from typing import Any, Optional, TypeVar
 
@@ -90,37 +92,66 @@ def build_timeline(events: list[WorkflowRunEvent]) -> WorkflowRunTimeline:
     )
 
 
-def format_timeline(timeline: WorkflowRunTimeline) -> str:
-    width = 96
+def format_timeline(timeline: WorkflowRunTimeline, width: Optional[int] = None) -> str:
+    terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    width = max(72, width if width is not None else terminal_width - 1)
     summary = timeline.summary
     status_symbol = "✓" if summary.status.value == "completed" else "●"
-    lines = [
-        "╭─ WORKFLOW RUN " + "─" * (width - 16),
-        f"│ ID       {timeline.run_id}",
+    lines = [_box_title("WORKFLOW RUN", width)]
+    _append_box_line(lines, f"ID       {timeline.run_id}", width)
+    _append_box_line(
+        lines,
         (
-            f"│ STATUS   {status_symbol} {summary.status.value.upper():<9} "
+            f"STATUS   {status_symbol} {summary.status.value.upper():<9} "
             f"DURATION  {_format_duration(summary.duration_ms):<8} "
             f"ATTEMPTS  {summary.attempts:<3}  RETRIES  {summary.retries:<3}  "
             f"PLANNED WAIT  {_format_duration(summary.planned_wait_ms)}"
         ),
-        "├" + "─" * (width - 1),
-        "│ TIME       #   EVENT                 STEP                TRY   WORKER · FENCE",
-        "├" + "─" * (width - 1),
-    ]
+        width,
+    )
+    lines.append(_box_separator(width))
+    _append_box_line(
+        lines,
+        "TIME       #   EVENT                 STEP                TRY   WORKER · FENCE",
+        width,
+    )
+    lines.append(_box_separator(width))
     for entry in timeline.entries:
         symbol, event_label = _event_display(entry.event_type)
         owner = "—" if entry.worker_id is None else f"{entry.worker_id} · f{entry.fence_token}"
         attempt = "—" if entry.attempt is None else f"#{entry.attempt}"
-        lines.append(
-            f"│ +{_format_duration(entry.elapsed_ms):<9} {entry.sequence:>2}  "
+        _append_box_line(
+            lines,
+            f"+{_format_duration(entry.elapsed_ms):<9} {entry.sequence:>2}  "
             f"{symbol} {event_label:<19} {(entry.step_id or 'run'):<19} "
-            f"{attempt:<5} {owner}"
+            f"{attempt:<5} {owner}",
+            width,
         )
         for index, detail in enumerate(_timeline_details(entry.detail, entry.wait_ms)):
             branch = "↳" if index == 0 else " "
-            lines.append(f"│              {branch} {detail}")
-    lines.append("╰" + "─" * (width - 1))
+            _append_box_line(lines, f"             {branch} {detail}", width)
+    lines.append("╰" + "─" * (width - 2) + "╯")
     return "\n".join(lines)
+
+
+def _box_title(title: str, width: int) -> str:
+    label = f"─ {title} "
+    return "╭" + label + "─" * (width - len(label) - 2) + "╮"
+
+
+def _box_separator(width: int) -> str:
+    return "├" + "─" * (width - 2) + "┤"
+
+
+def _append_box_line(lines: list[str], content: str, width: int) -> None:
+    content_width = width - 4
+    wrapped = (
+        [content]
+        if len(content) <= content_width
+        else textwrap.wrap(content, width=content_width, subsequent_indent="  ")
+    )
+    for part in wrapped or [""]:
+        lines.append(f"│ {part:<{content_width}} │")
 
 
 def _event_display(event_type: EventType) -> tuple[str, str]:

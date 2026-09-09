@@ -32,7 +32,7 @@ def test_timeline_is_derived_from_history(settings: object) -> None:
         engine.run_once()
 
     timeline = build_timeline(store.list_events(run.run_id))
-    rendered = format_timeline(timeline)
+    rendered = format_timeline(timeline, width=120)
 
     assert timeline.summary.status == WorkflowRunStatus.COMPLETED
     assert timeline.summary.attempts == 4
@@ -46,5 +46,6 @@ def test_timeline_is_derived_from_history(settings: object) -> None:
     assert "PLANNED WAIT" in rendered
     assert "timeline-worker · f1" in rendered
     assert "╭─ WORKFLOW RUN" in rendered
-    assert rendered.endswith("─")
+    assert rendered.endswith("╯")
+    assert all(len(line) == 120 for line in rendered.splitlines())
     assert "audit" not in rendered
