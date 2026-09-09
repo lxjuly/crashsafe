@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-09T03:30:00Z
+Updated: 2026-09-09T03:32:00Z
 
 ## Claims
 
@@ -37,7 +37,7 @@ Updated: 2026-09-09T03:30:00Z
   ordered history.
 - [settled] adaptive-backoff-model-implemented: A durable per-tool cooldown propagates the maximum `Retry-After` deadline across workflows, workers, and restarts.
 - [superseded] deterministic-feature-demo: The former Make-based feature demo was
-  replaced by one canonical uv-driven demo and focused manual scripts.
+  replaced by one canonical uv-driven demo and one focused graceful-drain script.
 - [settled] expanded-final-verification: The 28-test suite passed three consecutive runs; Ruff, strict mypy, `make demo`, and `make demo-features` then passed again.
 - [settled] workflow-run-contract: JSON definitions live under `workflows/` as
   authoring examples, not registered server resources. Each
@@ -52,8 +52,12 @@ Updated: 2026-09-09T03:30:00Z
   concrete graph, and dependency projections drive deterministic readiness.
 - [settled] public-audit-removed: The audit model and endpoint are removed while `projection_matches_history`, reducer tests, and projection rebuild retain the underlying correctness check internally.
 - [settled] repository-surface-cleaned: The tracked execution surface has one
-  canonical `scripts/demo.py`, one focused graceful-drain script with its shared
-  helper, two JSON definitions, and `uv.lock`.
+  canonical `scripts/demo.py`, one self-contained `scripts/graceful_drain.py`, two
+  JSON definitions, and `uv.lock`; the shell scripts and helper were removed.
+- [settled] self-contained-drain-demo: The graceful-drain check starts isolated
+  API and tool services, signals an in-flight worker, prints the drained timeline,
+  starts a replacement, prints the completed timeline, and asserts exactly one
+  charge from one `uv run` command.
 - [settled] consolidated-demo-verified: While worker 1 is blocked after the paid
   charge commits, worker 2 receives a targeted HTTP 429 for the trial run and
   persists its two-second Retry-After. The demo then SIGKILLs worker 1, prints

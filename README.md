@@ -211,29 +211,12 @@ leased concurrent execution without making concurrency a separate demo.
 
 The crash-resume, safe-retry, concurrency, and observability properties are
 covered together by the canonical demo. Graceful drain is mutually exclusive
-with SIGKILL, so it has one separate curl-based script. Run `uv sync` once and
-install `jq` before using it. Engine and tool state stay
-in `.crashsafe/engine.db` and `.crashsafe/tools.db` across server restarts. The
-script compares against existing ledger counts, never deletes either database,
-and always prints the run timeline.
-
-### Start the server
-
-In Terminal 1, delay the committed charge response long enough to signal the
-worker while its attempt is in flight:
+with SIGKILL, so one self-contained script demonstrates it separately. The
+script starts isolated services, sends SIGTERM during a committed charge call,
+shows the drained state, restarts processing, prints both timelines, and verifies
+one charge attempt and exactly one charge:
 
 ```bash
-CRASHSAFE_WORKERS=1 CRASHSAFE_FLAKY_RATE=0 \
-CRASHSAFE_DELAY_AFTER_TOOL_COMMIT=charge CRASHSAFE_COMMIT_DELAY=5 \
-CRASHSAFE_REQUEST_TIMEOUT=10 uv run crashsafe-stack
+uv sync
+uv run python scripts/graceful_drain.py
 ```
-
-In Terminal 2, send `SIGTERM`, verify that the worker stays alive to commit the
-in-flight attempt, and confirm it exits cleanly with one charge attempt and one
-side effect:
-
-```bash
-scripts/manual_graceful_drain.sh
-```
-
-The script exits nonzero if the drain invariant is not observed.
