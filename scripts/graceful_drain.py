@@ -46,6 +46,11 @@ def available_port() -> int:
         return int(candidate.getsockname()[1])
 
 
+def isolated_environment() -> dict[str, str]:
+    """Keep shell-level Crashsafe tuning from changing this deterministic scenario."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("CRASHSAFE_")}
+
+
 def wait_for_service(process: subprocess.Popen[bytes], url: str, label: str) -> None:
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
@@ -100,7 +105,7 @@ def main() -> None:
         tool_port = available_port()
     api_url = f"http://127.0.0.1:{api_port}"
     tool_url = f"http://127.0.0.1:{tool_port}"
-    environment = os.environ.copy()
+    environment = isolated_environment()
     environment.update(
         {
             "CRASHSAFE_STATE_DIR": str(STATE),

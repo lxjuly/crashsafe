@@ -1,6 +1,6 @@
 # Crashsafe Memory
 
-Updated: 2026-09-09T08:15:00Z
+Updated: 2026-09-09T08:40:00Z
 
 ## Claims
 
@@ -110,6 +110,13 @@ Updated: 2026-09-09T08:15:00Z
   ledger separately for its two new run IDs, aggregates those scoped counts,
   and uses the result for both output and invariant checking; historical global
   totals cannot affect or obscure the proof.
+- [settled] deterministic-scenario-environment: Both scenario scripts remove
+  inherited `CRASHSAFE_*` tuning before constructing their explicit child
+  environment, while retaining the caller-selected state directory in the
+  scenario's own configuration.
+- [settled] semantic-demo-invariants: The canonical demo identifies its one
+  targeted provider 429 and wait directly from timeline entries; unrelated safe
+  retries are reported separately and failure messages name the broken checks.
 - [settled] current-verification: All 43 tests, Ruff, strict mypy, shell syntax,
   and the combined canonical demo pass.
 - [settled] phase-15-verification: The expanded 38-test suite passed three consecutive uv runs; Ruff, strict mypy, and the canonical uv demo also passed.
